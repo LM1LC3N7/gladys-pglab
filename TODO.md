@@ -125,13 +125,22 @@ machine>:1883`, never `localhost` (the integration runs in a bridge
   try (lot 13 lesson). MQTT 5 refusals 134, 135, 138 too. A CONNECT
   carrying credentials closed or left without CONNACK twice in a row (also
   CONNACK 2 / 133, identifier rejected) is the same final stop (lesson 13
-  of lot 14, review r1 point 9); the status gives the reason at each
+  of lot 14, review r1 point 9). Counted only once the transport opened
+  (TCP connected, TLS connected and verified: `guardedStream` says so):
+  a refused certificate or a connection never opened is "unreachable" and
+  tried again (review r2 N1); the status gives the reason at each
   failure; without credentials the integration keeps trying. Other
   credentials saved (compared in memory only) or the test button try
   again; the stop is lifted by a successful connection only. Other CONNACK
   refusals are tried again like an unreachable broker (every 10 s). A
   password without a user name is a configuration problem (MQTT cannot
   send it).
+- **Lifting the stop by saving**: the broker, the credentials or the TLS
+  check changed (`credentialsKey`).
+- **Tests and clocks**: the app tests use a clock that moves on every read;
+  `test/connack.test.js` runs on the real clock against local fake brokers
+  (a stop sent and confirmed, a TLS server with a self-signed test
+  certificate in `test/fixtures/`, a port dropping the connections).
 - **`verify_certificate` off**: documented exactly (the credentials go to
   whoever answers); no certificate pinning in v1 (as gladys-qbus).
 - **Session state** (boards, last seen, rejected count) is emptied on every

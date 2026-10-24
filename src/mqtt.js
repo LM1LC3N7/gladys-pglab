@@ -102,8 +102,12 @@ function guardError(message) {
   return err;
 }
 
-/** The socket to the broker, its incoming side behind the guard. */
-export function guardedStream(config) {
+/**
+ * The socket to the broker, its incoming side behind the guard. `onOpen`
+ * is called once the transport is open: TCP connected, or TLS connected and
+ * its certificate accepted (only then may the credentials leave).
+ */
+export function guardedStream(config, { onOpen } = {}) {
   const options = { host: config.host, port: config.port };
   const socket = config.tls
     ? tls.connect({
@@ -112,6 +116,7 @@ export function guardedStream(config) {
         ...(isIP(config.host) === 0 ? { servername: config.host } : {}),
       })
     : net.connect(options);
+  socket.once(config.tls ? 'secureConnect' : 'connect', () => onOpen?.());
   const guard = new PacketGuard();
   socket.pipe(guard);
   const stream = new Duplex({
@@ -148,7 +153,13 @@ export function connectBroker(
   {
     protocolVersion = 5,
     reconnectPeriod = TIMINGS.reconnectPeriod,
-    streamBuilder = () => guardedStream(config),
+    connectTimeout = TIMINGS.connectTimeout,
+    onAttempt,
+    onOpen,
+    streamBuilder = () => {
+      onAttempt?.();
+      return guardedStream(config, { onOpen });
+    },
   } = {},
 ) {
   return new MqttClient(streamBuilder, {
@@ -158,7 +169,7 @@ export function connectBroker(
     clientId: `gladys_pglab_${randomBytes(4).toString('hex')}`,
     clean: true,
     keepalive: 60,
-    connectTimeout: TIMINGS.connectTimeout,
+    connectTimeout,
     reconnectPeriod,
     // A CONNACK refusal is tried again like an unreachable broker, except the
     // credentials (src/app.js ends the client for good) and the protocol

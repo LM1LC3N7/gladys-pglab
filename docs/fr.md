@@ -85,7 +85,9 @@ configuration (d'autres volets, d'autres relais), elle **n'est pas
 appliquée** : le statut le dit (pour un nom : « ancien → nouveau »), et tant
 que vous n'avez pas cliqué sur **Scanner** dans l'onglet Découverte, ses
 relais et l'ouverture de ses volets sont refusés. L'arrêt et la fermeture
-partent quand même, sous le nom accepté et sous le nom annoncé.
+partent quand même, sous le nom accepté et sous le nom annoncé : si le nom
+annoncé est celui d'une autre carte, le volet de même numéro de cette carte
+les reçoit aussi.
 
 Cliquer sur **Scanner** accepte ce qu'annoncent les cartes à ce moment-là,
 et oublie les cartes qui ne s'annoncent plus et n'ont aucun appareil dans
@@ -96,7 +98,9 @@ Deux cartes du même nom partagent leurs topics : leurs états sont ignorés,
 leurs relais et ouvertures refusés (l'arrêt et la fermeture les atteignent
 toutes) jusqu'à ce que l'une d'elles soit renommée (ou que l'ancienne
 annonce retenue d'une carte retirée soit effacée du broker) et que vous
-Scanniez.
+Scanniez. Une carte remplacée par une neuve du même nom reste acceptée tant
+qu'elle a des appareils dans Gladys : supprimez les appareils de l'ancienne
+carte, puis Scannez.
 
 ## Quand une commande est refusée
 
@@ -131,9 +135,11 @@ la carte plus tard, au réveil du broker.
 - **Broker injoignable** : l'intégration réessaie toutes les 10 secondes,
   le statut dit pourquoi.
 - **Identifiants refusés**, ou **broker qui ferme la connexion (ou ne
-  répond pas) après avoir reçu les identifiants, deux fois de suite** :
+  répond pas) après avoir reçu les identifiants, deux fois de suite** (un
+  certificat refusé ou une connexion jamais ouverte ne comptent pas : les
+  identifiants ne sont pas partis, l'intégration réessaie) :
   l'intégration s'arrête pour de bon (même après un redémarrage) et ne
-  réessaie rien d'elle-même. Enregistrez d'autres identifiants, ou cliquez
+  réessaie rien d'elle-même. Enregistrez d'autres identifiants (ou un autre réglage TLS), ou cliquez
   sur **Tester la connexion** ; l'arrêt est levé dès qu'une connexion
   réussit. Sans utilisateur ni mot de passe, l'intégration continue
   d'essayer.

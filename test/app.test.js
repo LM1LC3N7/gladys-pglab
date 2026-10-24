@@ -46,6 +46,7 @@ async function setup(t, { cfg = BASE, devices = [], memory = null, b = board() }
   const broker = fakeConnector(b.responder);
   const store = memoryStore(memory);
   const logs = [];
+  let reads = 0;
   const logger = {
     info: (m) => logs.push(m),
     warn: (m) => logs.push(m),
@@ -55,7 +56,8 @@ async function setup(t, { cfg = BASE, devices = [], memory = null, b = board() }
   const app = new PglabApp({
     gladys,
     connect: broker.connect,
-    now: () => Date.now(),
+    // A clock that moves on every read (lesson of 2026-10-24): one read per decision.
+    now: () => Date.now() + (reads += 1),
     store,
     logger,
   });
@@ -468,9 +470,16 @@ test('refused credentials survive a restart; other credentials lift the stop', a
   const ctx = await setup(t, { memory: { refused: true, boards: {} } });
   assert.equal(ctx.broker.clients.length, 0, 'stopped at start');
   assert.match(ctx.gladys.fake.connectionStatus.message.en, /no new try by itself/);
-  await ctx.gladys.fake.configUpdated({ ...BASE, verify_certificate: false });
+  await ctx.gladys.fake.configUpdated({ ...BASE, sensor_interval: 30 });
   assert.equal(ctx.broker.clients.length, 0, 'same credentials: still stopped');
   await ctx.gladys.fake.configUpdated({ ...BASE, password: 'another one' });
+  assert.equal(ctx.broker.clients.length, 1);
+  assert.equal(ctx.store.data.refused, false);
+});
+
+test('another TLS check saved lifts the stop too', async (t) => {
+  const ctx = await setup(t, { memory: { refused: true, boards: {} } });
+  await ctx.gladys.fake.configUpdated({ ...BASE, verify_certificate: false });
   assert.equal(ctx.broker.clients.length, 1);
   assert.equal(ctx.store.data.refused, false);
 });

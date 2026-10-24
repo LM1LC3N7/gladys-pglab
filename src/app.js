@@ -82,17 +82,6 @@ const layoutRecord = (board) => ({
   boards: board.layout ? board.layout.boards : null,
 });
 
-/** Socket errors before the connection opened: no CONNECT (no credentials) left. */
-const NOT_OPENED = [
-  'ECONNREFUSED',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'EADDRNOTAVAIL',
-  'ETIMEDOUT',
-];
-
 /** A monotonic clock: the waits and silences never move with the wall clock. */
 const monotonic = () => performance.now();
 
@@ -308,31 +297,35 @@ export class PglabApp {
     });
     this.publisher.start();
     // One session only: the previous client was ended by stop().
+    /**
+     * A CONNECT left without CONNACK (so far): why, if the attempt ends now.
+     * Armed only once the transport opened (TCP connected, or TLS connected
+     * AND verified: src/mqtt.js says so), since only then may the
+     * credentials have left; cleared by a CONNACK and by every new attempt.
+     */
+    const UNANSWERED = 'the broker closed the connection without answering';
+    let pending;
+    let opened = false;
+    const hooks = {
+      onAttempt: () => {
+        pending = undefined;
+        opened = false;
+      },
+      onOpen: () => {
+        opened = true;
+        pending = UNANSWERED;
+      },
+    };
     let client;
     try {
-      client = this.connect(this.config, { protocolVersion: this.protocolVersion });
+      client = this.connect(this.config, { protocolVersion: this.protocolVersion, ...hooks });
     } catch (err) {
       this.lastError = errorReason(err);
       await this.setStatus(false, T.unreachable(this.lastError));
       return;
     }
     this.client = client;
-    /**
-     * A CONNECT left without CONNACK (so far): why, if the attempt ends now.
-     * Set when an attempt starts (mqtt.js writes the CONNECT as soon as the
-     * socket opens), cleared by a CONNACK or a socket that never opened.
-     */
-    const UNANSWERED = 'the broker closed the connection without answering';
-    let pending = UNANSWERED;
     const current = () => generation === this.generation && this.client === client;
-    client.on('reconnect', () => {
-      pending = UNANSWERED;
-    });
-    client.on('packetsend', (packet) => {
-      if (packet?.cmd === 'connect') {
-        pending = UNANSWERED;
-      }
-    });
     client.on('packetreceive', (packet) => {
       if (packet?.cmd === 'connack') {
         pending = undefined;
@@ -353,12 +346,12 @@ export class PglabApp {
       if (!current()) {
         return;
       }
-      const reason = errorReason(err);
-      this.lastError = reason;
-      if (NOT_OPENED.includes(err?.code)) {
-        // The socket never opened: the credentials did not leave.
-        pending = undefined;
+      let reason = errorReason(err);
+      if (err?.message === 'connack timeout' && !opened) {
+        // The transport never opened (a firewall dropping the packets...): nothing left.
+        reason = 'no answer from the broker at the network level';
       }
+      this.lastError = reason;
       if (isRefusal(err)) {
         this.onRefused(reason).catch((e) => this.logger.error(`After a refusal: ${e.message}`));
         return;
@@ -402,7 +395,9 @@ export class PglabApp {
 
   /**
    * A CONNECT carrying the credentials was closed or left without answer
-   * (lesson 13 of lot 14): the second time in a row, a final stop, as for
+   * once the transport was open (lesson 13 of lot 14; a TLS certificate
+   * refused or a TCP connection never opened does not count): the second
+   * time in a row, a final stop, as for
    * refused credentials. Without credentials there is nothing to protect.
    */
   async onUnanswered(reason) {

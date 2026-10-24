@@ -79,7 +79,9 @@ If a board later announces another name, type, MAC address or layout
 (other shutters, other relays), it is **not applied**: the status says so
 (for a name: "old → new"), and until you click **Scan** in the Discovery
 tab, its relays and the opening of its shutters are refused. Stop and close
-still leave, under the accepted name and under the announced one.
+still leave, under the accepted name and under the announced one: if the
+announced name is the name of another board, the shutter of the same number
+on that board receives them too.
 
 Clicking **Scan** accepts what the boards announce at that moment, and
 forgets the boards that no longer announce themselves and have no device in
@@ -89,7 +91,9 @@ advises a Scan.
 Two boards with the same name share their topics: their states are ignored,
 their relays and openings refused (stop and close reach all of them) until
 one of them is renamed (or the old retained announcement of a board you
-removed is cleared from the broker) and you Scan.
+removed is cleared from the broker) and you Scan. A board replaced by a new
+one of the same name stays accepted as long as it has devices in Gladys:
+delete the devices of the old board, then Scan.
 
 ## When a command is refused
 
@@ -124,9 +128,11 @@ broker wakes up.
 - **Broker unreachable**: the integration tries again every 10 seconds, the
   status says why.
 - **Credentials refused**, or **a broker that closes the connection (or
-  does not answer) after receiving the credentials, twice in a row**: the
+  does not answer) after receiving the credentials, twice in a row** (a
+  certificate refused or a connection that never opened does not count:
+  the credentials did not leave, the integration tries again): the
   integration stops for good (also after a restart) and tries nothing by
-  itself. Save other credentials, or click **Test the connection**; the stop
+  itself. Save other credentials (or another TLS check), or click **Test the connection**; the stop
   is lifted once a connection succeeds. Without user name and password, the
   integration keeps trying.
 - **A password without a user name**: refused in the configuration (MQTT

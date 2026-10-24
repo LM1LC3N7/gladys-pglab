@@ -6,7 +6,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import net from 'node:net';
+import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
 import { PglabApp } from '../src/app.js';
@@ -45,9 +48,14 @@ async function fakeBroker(onConnect) {
   return server;
 }
 
-async function run(t, server, { credentials = true, settleMs = 800 } = {}) {
+async function run(
+  t,
+  server,
+  { credentials = true, settleMs = 800, scheme = 'mqtt', extra = {}, connectTimeout } = {},
+) {
   const cfg = {
-    broker_url: `mqtt://127.0.0.1:${server.address().port}`,
+    broker_url: `${scheme}://127.0.0.1:${server.address().port}`,
+    ...extra,
     ...(credentials ? { username: 'gladys', password: SECRET } : {}),
   };
   const gladys = createFakeGladys({ config: cfg });
@@ -58,7 +66,12 @@ async function run(t, server, { credentials = true, settleMs = 800 } = {}) {
     gladys,
     store,
     logger: { info: log, warn: log, error: log, debug: log },
-    connect: (config, options) => connectBroker(config, { ...options, reconnectPeriod: 100 }),
+    connect: (config, options) =>
+      connectBroker(config, {
+        ...options,
+        reconnectPeriod: 100,
+        ...(connectTimeout ? { connectTimeout } : {}),
+      }),
   });
   registerHandlers(gladys, app);
   t.after(() => {
@@ -199,4 +212,107 @@ test('an unreachable broker (connection refused) is tried again, never stopped',
   const { store, gladys } = await run(t, fake, { settleMs: 1200 });
   assert.equal(store.data, null);
   assert.match(gladys.fake.connectionStatus.message.en, /unreachable \(ECONNREFUSED\)/);
+});
+
+test('TLS with a certificate not recognised: no CONNECT left, never a final stop', async (t) => {
+  let decoded = 0;
+  const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url));
+  const server = tls.createServer(
+    { key: fixture('self-signed.key'), cert: fixture('self-signed.crt') },
+    (socket) => {
+      socket.on('data', () => {
+        decoded += 1;
+      });
+      socket.on('error', () => {});
+    },
+  );
+  server.on('tlsClientError', () => {});
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { store, gladys } = await run(t, server, { scheme: 'mqtts', settleMs: 1500 });
+  assert.equal(decoded, 0, 'nothing reached the broker');
+  assert.equal(store.data, null, 'no stop');
+  assert.match(
+    gladys.fake.connectionStatus.message.en,
+    /unreachable \(DEPTH_ZERO_SELF_SIGNED_CERT\)/,
+  );
+});
+
+test('a port that drops the connections: unreachable, tried again, never a final stop', async (t) => {
+  const child = spawn(process.execPath, [
+    new URL('./helpers/blackhole.mjs', import.meta.url).pathname,
+    '6000',
+  ]);
+  t.after(() => child.kill());
+  const port = await new Promise((resolve) =>
+    child.stdout.once('data', (data) => resolve(Number(String(data).trim()))),
+  );
+  // Fill the accept queue: the next connections get no answer at all.
+  const fillers = [];
+  for (let i = 0; i < 4; i += 1) {
+    const socket = net.connect(port, '127.0.0.1');
+    socket.on('error', () => {});
+    fillers.push(socket);
+  }
+  t.after(() => fillers.forEach((socket) => socket.destroy()));
+  await wait(200);
+  const fake = { address: () => ({ port }), close() {} };
+  const { store, gladys } = await run(t, fake, { settleMs: 2000, connectTimeout: 300 });
+  assert.equal(store.data, null, 'no stop');
+  assert.match(
+    gladys.fake.connectionStatus.message.en,
+    /unreachable \(no answer from the broker at the network level\)/,
+  );
+});
+
+test('real clock: a stop reaches the broker and the state sent back confirms it', async (t) => {
+  const BOARD = 'E-BOARD-DD53AC85';
+  const sockets = [];
+  const server = await fakeBroker((packet, reply, socket) => {
+    sockets.push(socket);
+    reply({ cmd: 'connack', reasonCode: 0, sessionPresent: false });
+  });
+  server.published = [];
+  server.on('connection', (socket) => {
+    const parser = mqttPacket.parser();
+    const send = (p) => socket.write(mqttPacket.generate(p, { protocolVersion: 5 }));
+    parser.on('packet', (packet) => {
+      if (packet.cmd === 'subscribe') {
+        send({
+          cmd: 'suback',
+          messageId: packet.messageId,
+          granted: packet.subscriptions.map(() => 0),
+        });
+        send({
+          cmd: 'publish',
+          topic: 'pglab/discovery/DD53AC85/config',
+          retain: true,
+          payload: JSON.stringify({
+            ip: '192.168.1.40',
+            mac: 'AA:BB:CC:DD:53:85',
+            id: 'DD53AC85',
+            name: BOARD,
+            type: 'E-BOARD',
+            manufacturer: 'PG LAB Electronics',
+            hw: '1.0.0',
+            fw: '1.2.3',
+            params: { shutters: 1, boards: '10000000' },
+          }),
+        });
+      }
+      if (packet.cmd === 'publish') {
+        server.published.push([packet.topic, String(packet.payload)]);
+        send({ cmd: 'publish', topic: `pglab/${BOARD}/shutter/0/state`, payload: 'OPEN' });
+      }
+    });
+    socket.on('data', (data) => parser.parse(data));
+  });
+  const { gladys } = await run(t, server, { settleMs: 2500 });
+  const device = gladys.fake.discoveredDevices.find((d) =>
+    d.external_id.endsWith(':shutter:DD53AC85-0'),
+  );
+  assert.ok(device, 'the shutter is offered');
+  await gladys.fake.deviceCreated(device);
+  const ack = await gladys.fake.setValue(device, device.features[0], 0);
+  assert.equal(ack.success, true, ack.error);
+  assert.deepEqual(server.published, [[`pglab/${BOARD}/shutter/0/set`, 'STOP']]);
 });

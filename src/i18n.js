@@ -101,8 +101,8 @@ function notes(n, language) {
   if (n.sharedNames.length > 0) {
     lines.push(
       en
-        ? `Several boards are named ${list(n.sharedNames)}: their states are ignored and their relays and openings refused, stop and close reach all of them (rename one of them, or remove the old retained discovery from the broker, then Scan).`
-        : `Plusieurs cartes s’appellent ${list(n.sharedNames)} : leurs états sont ignorés, leurs relais et ouvertures refusés, arrêt et fermeture les atteignent toutes (renommez l’une d’elles, ou effacez l’ancienne découverte retenue sur le broker, puis Scannez).`,
+        ? `Several boards are named ${list(n.sharedNames)}: their states are ignored and their relays and openings refused, stop and close reach all of them (rename one of them, or remove the old retained discovery from the broker, then Scan; a board replaced by a new one of the same name: delete the devices of the old board in Gladys, then Scan).`
+        : `Plusieurs cartes s’appellent ${list(n.sharedNames)} : leurs états sont ignorés, leurs relais et ouvertures refusés, arrêt et fermeture les atteignent toutes (renommez l’une d’elles, ou effacez l’ancienne découverte retenue sur le broker, puis Scannez ; une carte remplacée par une neuve du même nom : supprimez dans Gladys les appareils de l’ancienne carte, puis Scannez).`,
     );
   }
   if (n.unsupported > 0) {

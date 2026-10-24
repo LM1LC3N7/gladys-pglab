@@ -173,6 +173,14 @@ export const connectionKey = (config) =>
     config.verifyCertificate,
   ]);
 
-/** The broker and the credentials only: other ones lift the stop on refused credentials. */
+/**
+ * The broker, the credentials and the TLS check: saving other ones lifts the
+ * stop on refused credentials.
+ */
 export const credentialsKey = (config) =>
-  JSON.stringify([config.brokerUrl ?? null, config.username, config.password]);
+  JSON.stringify([
+    config.brokerUrl ?? null,
+    config.username,
+    config.password,
+    config.verifyCertificate,
+  ]);

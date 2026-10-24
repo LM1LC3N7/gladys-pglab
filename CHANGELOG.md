@@ -38,8 +38,9 @@ the notes of the version's GitHub Release.
   type is applied only by a Scan.
 - A Scan forgets the boards seen in passing; a repeated discovery never
   delays the devices; the status counters are posted at most every 10 s.
-- A CONNECT carrying credentials closed or unanswered twice in a row stops
-  for good, like refused credentials; a password without a user name is a
+- A CONNECT carrying credentials closed or unanswered twice in a row (once
+  the TCP or verified TLS connection is open) stops for good, like refused
+  credentials; a password without a user name is a
   configuration problem.
 - One MQTT session (the test button uses it), 300 states per minute at
   most, transport badges (a board silent for 5 minutes is unreachable),
