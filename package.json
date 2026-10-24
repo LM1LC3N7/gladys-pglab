@@ -1,6 +1,6 @@
 {
   "name": "gladys-pglab",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for PG LAB Electronics boards (E-Board), over the local MQTT broker of the user. Unofficial, not affiliated with PG LAB Electronics.",
   "type": "module",

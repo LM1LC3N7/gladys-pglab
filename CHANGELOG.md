@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-24
+
 ### Added
 
 - PG LAB Electronics E-Boards over an MQTT broker of the local network (the
@@ -45,3 +47,6 @@ the notes of the version's GitHub Release.
 - One MQTT session (the test button uses it), 300 states per minute at
   most, transport badges (a board silent for 5 minutes is unreachable),
   messages in French or English.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-pglab/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-pglab/releases/tag/v0.1.1
