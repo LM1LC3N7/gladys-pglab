@@ -5,19 +5,23 @@
 //     new try, even across a restart; only other credentials (saved in the
 //     configuration) or the "Test the connection" button connect again, and
 //     the stop is lifted only once a connection succeeded.
-//   - `boards`: per board id, the layout the user accepted (its MAC, its
-//     number of shutters and its extension boards). The first discovery of
-//     an unknown board is accepted; a later discovery that changes it
-//     (another MAC, other shutters or relays) is never applied by itself,
-//     only by a Scan in the Discovery tab: what a board publishes never
-//     turns an output into something commandable.
+//   - `boards`: per board id, the configuration the user accepted: its name
+//     (which routes the topics), its type, its MAC, its number of shutters
+//     and its extension boards. The first discovery of an unknown board is
+//     accepted (64 boards at most); a later discovery that changes any of
+//     it is never applied by itself, only by a Scan in the Discovery tab,
+//     which also forgets the boards no longer announced and without a
+//     device in Gladys. What a board publishes never turns an output into
+//     something commandable; the stop and the close of a shutter are routed
+//     from this configuration, before any announcement.
 // Never a secret: no user name, no password, not even a hash of them. Read
 // back bounded, only known keys of the expected shape (never an inherited or
 // `__proto__` key).
 // -----------------------------------------------------------------------------
 
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { LIMITS } from './constants.js';
+import { DEVICE_TYPES, LIMITS } from './constants.js';
+import { isName } from './protocol.js';
 
 export const STATE_FILE = '/data/pglab-state.json';
 
@@ -74,15 +78,17 @@ const MAC = /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/;
 
 /** A layout as kept in /data, or undefined when its shape is wrong. */
 export function normalizeLayout(raw) {
+  const name = own(raw, 'name');
+  const type = own(raw, 'type');
   const mac = own(raw, 'mac');
   const shutters = own(raw, 'shutters');
   const boards = own(raw, 'boards');
-  if (typeof mac !== 'string' || !MAC.test(mac)) {
+  if (typeof mac !== 'string' || !MAC.test(mac) || !isName(name) || !DEVICE_TYPES.includes(type)) {
     return undefined;
   }
   if (shutters === null && boards === null) {
     // A board without outputs (E-Switch, E-Relay in pypglab 0.0.5).
-    return { mac, shutters: null, boards: null };
+    return { name, type, mac, shutters: null, boards: null };
   }
   if (
     !Number.isInteger(shutters) ||
@@ -93,7 +99,7 @@ export function normalizeLayout(raw) {
   ) {
     return undefined;
   }
-  return { mac, shutters, boards };
+  return { name, type, mac, shutters, boards };
 }
 
 /** The persisted state, repaired and bounded. */
@@ -117,6 +123,9 @@ export function normalizeMemory(raw) {
 export const serializeMemory = ({ refused, boards }) => ({
   refused,
   boards: Object.fromEntries(
-    [...boards].map(([id, l]) => [id, { mac: l.mac, shutters: l.shutters, boards: l.boards }]),
+    [...boards].map(([id, l]) => [
+      id,
+      { name: l.name, type: l.type, mac: l.mac, shutters: l.shutters, boards: l.boards },
+    ]),
   ),
 });

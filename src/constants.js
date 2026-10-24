@@ -77,6 +77,8 @@ export const TIMINGS = {
   flushInterval: SECOND,
   /** An unchanged value is re-sent this often, so it stays recently dated in Gladys. */
   stateHeartbeat: 30 * MINUTE,
+  /** The counters of the status (a flood of discoveries) are posted at most this often. */
+  statusRefresh: 10 * SECOND,
   /** A board that published nothing useful for this long is shown unreachable. */
   silence: 5 * MINUTE,
   /** The transport badges are checked this often. */

@@ -6,26 +6,34 @@
 // connection" button. index.js only wires the SDK handlers (src/handlers.js).
 //
 // Failures (lessons of the previous waves):
-//   - credentials refused by the broker: the client stops for good, a stop
+//   - credentials refused by the broker (CONNACK 4, 5, 134, 135, 138), or a
+//     CONNECT carrying credentials left unanswered (connection closed or no
+//     CONNACK in time) twice in a row: the client stops for good, a stop
 //     persisted in /data, no automatic new try (not even after a restart);
 //     saving other credentials or "Test the connection" tries again, and the
 //     stop is lifted only once a connection succeeded;
-//   - broker unreachable: mqtt.js tries again every 10 s (a local broker);
+//   - broker unreachable: mqtt.js tries again every 10 s (a local broker),
+//     the status says why;
+//   - a broker without MQTT 5: 3.1.1, said in the status;
 //   - a reconnection to Gladys keeps the MQTT client and the stop, and only
-//     re-sends the status, the Discovery and the badges;
-//   - what is known of the boards belongs to one broker session: emptied on
-//     every connection, filled again by the retained discoveries.
+//     re-sends the status, the Discovery and the badges.
 //
 // What a board publishes is never trusted to make something commandable:
 //   - a relay is a switch only when the user declared it safe; otherwise a
 //     read-only state and buttons, off by default;
-//   - the layout (shutters, relays) and the MAC of a board are the ones the
-//     user accepted (/data): the first discovery of an unknown board, or a
-//     Scan in the Discovery tab. A discovery that changes them is not
-//     applied; until a Scan, its relays and the opening of its shutters are
-//     refused (stop and close are not);
+//   - the configuration of each board (name, type, MAC, shutters, relays)
+//     is the one the user accepted (/data): the first discovery of an
+//     unknown board, or a Scan in the Discovery tab. The devices and the
+//     routing of the commands come from it, from the start (before any
+//     announcement). A discovery that changes it is not applied; until a
+//     Scan, the relays and the opening of the shutters of that board are
+//     refused;
 //   - two boards with the same name (their topics are the same): their
-//     states are ignored and every command but a stop refused.
+//     states are ignored, relays and openings refused.
+// The stop and the close of a shutter of an accepted configuration are
+// refused only when the broker is not connected (or the value is not a
+// command): they go under the accepted name, and also under the announced
+// one when it differs.
 //
 // Commands: one message, never queued while the broker is down (a command
 // leaves now or is refused), sent within 3.5 s of the click or refused
@@ -38,7 +46,13 @@ import { ambiguousOutputs, connectionKey, credentialsKey, normalizeConfig } from
 import { LIMITS, TIMINGS } from './constants.js';
 import { ERRORS, T, TEST, word } from './i18n.js';
 import { CommandRefusal, buildModel } from './model.js';
-import { connectBroker, errorReason, isRefusal } from './mqtt.js';
+import {
+  connectBroker,
+  errorReason,
+  isIdentifierRefusal,
+  isProtocolRefusal,
+  isRefusal,
+} from './mqtt.js';
 import {
   SUBSCRIPTIONS,
   commandMessage,
@@ -59,12 +73,25 @@ const publish = (client, topic, payload) =>
     );
   });
 
-/** The layout of a discovery, as kept in /data. */
+/** The configuration of a discovery, as kept in /data. */
 const layoutRecord = (board) => ({
+  name: board.name,
+  type: board.type,
   mac: board.mac,
   shutters: board.layout ? board.layout.shutters : null,
   boards: board.layout ? board.layout.boards : null,
 });
+
+/** Socket errors before the connection opened: no CONNECT (no credentials) left. */
+const NOT_OPENED = [
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EADDRNOTAVAIL',
+  'ETIMEDOUT',
+];
 
 /** A monotonic clock: the waits and silences never move with the wall clock. */
 const monotonic = () => performance.now();
@@ -91,9 +118,12 @@ export class PglabApp {
     this.client = null;
     this.generation = 0;
     this.started = false;
+    this.protocolVersion = 5;
+    this.unanswered = 0;
     this.resetSession();
     this.model = buildModel({ boards: [] });
     this.lastStatus = undefined;
+    this.lastStatusAt = -Infinity;
     this.publishedDevices = undefined;
     /** deviceId -> transport last published */
     this.transports = new Map();
@@ -111,7 +141,11 @@ export class PglabApp {
   /** What belongs to one broker session: back to "unknown" on every connection. */
   resetSession() {
     /** board id -> the board of its latest valid discovery in this session */
-    this.boards = new Map();
+    this.announced = new Map();
+    /** board id -> its raw discovery (an identical one changes nothing) */
+    this.rawDiscovery = new Map();
+    /** board id -> name, of the boards ignored over the limit of accepted boards */
+    this.ignored = new Map();
     /** board id -> when it last published something useful (not retained) */
     this.lastSeen = new Map();
     /** discovery messages refused in this session */
@@ -152,6 +186,13 @@ export class PglabApp {
     }, delay);
   }
 
+  /** Like `later`, but an armed timer is kept: at most `delay` after the first request. */
+  once(name, delay, fn) {
+    if (this.timersById[name] === undefined) {
+      this.later(name, delay, fn);
+    }
+  }
+
   clearTimers() {
     for (const id of Object.values(this.timersById)) {
       this.timers.clearTimeout(id);
@@ -174,8 +215,7 @@ export class PglabApp {
       if (this.lastStatusArgs) {
         await this.setStatus(...this.lastStatusArgs);
       }
-      await this.updateStatus();
-      await this.rebuild({ force: true });
+      await this.rebuild({ force: true, urgent: true });
       return;
     }
     await this.start(raw);
@@ -192,9 +232,9 @@ export class PglabApp {
         [...before.safeOutputs].sort().join() !== [...next.safeOutputs].sort().join()
       ) {
         // Names, or which relays are switches: the devices are built again.
-        await this.rebuild();
+        await this.rebuild({ urgent: true });
       } else {
-        await this.updateStatus();
+        await this.updateStatus({ urgent: true });
       }
       return;
     }
@@ -224,6 +264,8 @@ export class PglabApp {
     this.connKey = connectionKey(this.config);
     this.wasConnected = false;
     this.lastError = undefined;
+    this.unanswered = 0;
+    this.protocolVersion = 5;
     const credentials = credentialsKey(this.config);
     if (this.credKey !== undefined && credentials !== this.credKey && this.memory.refused) {
       // Other credentials (or another broker): the stop on the refused ones is lifted.
@@ -232,12 +274,13 @@ export class PglabApp {
     }
     this.credKey = credentials;
     this.resetSession();
-    this.model = buildModel({ boards: [] });
     this.publishedDevices = undefined;
     this.lastStatus = undefined;
     this.transports.clear();
     this.lastValues.clear();
     this.refreshCreated();
+    // The routing of the accepted boards exists before any announcement.
+    this.buildRouting();
     if (this.config.problem) {
       await this.setStatus(false, T.problem(this.config.problem));
       return;
@@ -247,6 +290,10 @@ export class PglabApp {
       return;
     }
     await this.connectNow();
+  }
+
+  hasCredentials() {
+    return this.config.username !== '' || this.config.password !== '';
   }
 
   async connectNow() {
@@ -263,16 +310,37 @@ export class PglabApp {
     // One session only: the previous client was ended by stop().
     let client;
     try {
-      client = this.connect(this.config);
+      client = this.connect(this.config, { protocolVersion: this.protocolVersion });
     } catch (err) {
       this.lastError = errorReason(err);
       await this.setStatus(false, T.unreachable(this.lastError));
       return;
     }
     this.client = client;
+    /**
+     * A CONNECT left without CONNACK (so far): why, if the attempt ends now.
+     * Set when an attempt starts (mqtt.js writes the CONNECT as soon as the
+     * socket opens), cleared by a CONNACK or a socket that never opened.
+     */
+    const UNANSWERED = 'the broker closed the connection without answering';
+    let pending = UNANSWERED;
     const current = () => generation === this.generation && this.client === client;
+    client.on('reconnect', () => {
+      pending = UNANSWERED;
+    });
+    client.on('packetsend', (packet) => {
+      if (packet?.cmd === 'connect') {
+        pending = UNANSWERED;
+      }
+    });
+    client.on('packetreceive', (packet) => {
+      if (packet?.cmd === 'connack') {
+        pending = undefined;
+      }
+    });
     client.on('connect', () => {
       if (current()) {
+        this.unanswered = 0;
         this.onConnect().catch((err) => this.logger.error(`After connection: ${err.message}`));
       }
     });
@@ -287,23 +355,73 @@ export class PglabApp {
       }
       const reason = errorReason(err);
       this.lastError = reason;
+      if (NOT_OPENED.includes(err?.code)) {
+        // The socket never opened: the credentials did not leave.
+        pending = undefined;
+      }
       if (isRefusal(err)) {
         this.onRefused(reason).catch((e) => this.logger.error(`After a refusal: ${e.message}`));
         return;
+      }
+      if (isProtocolRefusal(err) && this.protocolVersion === 5) {
+        this.onProtocolRefused().catch((e) => this.logger.error(`MQTT 3.1.1: ${e.message}`));
+        return;
+      }
+      if (err?.message === 'connack timeout' && pending) {
+        pending = 'no answer from the broker to the connection';
+      }
+      if (isIdentifierRefusal(err)) {
+        // Counted like a CONNECT left unanswered (the same client id comes back).
+        pending = reason;
       }
       this.warnOnce(`broker:${reason}`, `MQTT broker: ${reason}`);
       this.notify('session', { error: reason }, { all: true });
       this.setStatus(false, T.unreachable(reason));
     });
     client.on('close', () => {
-      if (current() && this.wasConnected) {
+      if (!current()) {
+        return;
+      }
+      if (pending) {
+        const reason = pending;
+        pending = undefined;
+        this.onUnanswered(reason).catch((e) => this.logger.error(`Unanswered: ${e.message}`));
+        return;
+      }
+      if (this.wasConnected) {
+        this.wasConnected = false;
         this.failWaiters();
         // The boards are unknown until the next session announces them again.
         this.resetSession();
-        this.setStatus(false, T.lost);
+        // The reason when the connection ended on an error (a message over 8 KB...).
+        this.setStatus(false, this.lastError ? T.unreachable(this.lastError) : T.lost);
         this.publishAllTransports().catch(() => {});
       }
     });
+  }
+
+  /**
+   * A CONNECT carrying the credentials was closed or left without answer
+   * (lesson 13 of lot 14): the second time in a row, a final stop, as for
+   * refused credentials. Without credentials there is nothing to protect.
+   */
+  async onUnanswered(reason) {
+    this.lastError = reason;
+    this.unanswered += 1;
+    if (this.hasCredentials() && this.unanswered >= 2) {
+      await this.onRefused(`${reason}, twice`);
+      return;
+    }
+    this.notify('session', { error: reason }, { all: true });
+    await this.setStatus(false, T.unreachable(reason));
+  }
+
+  /** The broker does not speak MQTT 5: 3.1.1, with the size guard of src/mqtt.js only. */
+  async onProtocolRefused() {
+    this.logger.warn('The MQTT broker does not support MQTT 5: using MQTT 3.1.1');
+    this.endClient();
+    this.protocolVersion = 4;
+    await this.connectNow();
   }
 
   /** The broker refused the credentials: stop for good (persisted), no automatic new try. */
@@ -342,6 +460,7 @@ export class PglabApp {
     }
     this.lastStatus = key;
     this.lastStatusArgs = [connected, message];
+    this.lastStatusAt = this.now();
     await this.gladys
       .setConnectionStatus(connected, message)
       .catch((err) => this.logger.warn(`setConnectionStatus failed: ${err.message}`));
@@ -355,7 +474,9 @@ export class PglabApp {
   }
 
   async onConnect() {
-    this.logger.info(`Connected to the MQTT broker ${this.config.brokerUrl}`);
+    this.logger.info(
+      `Connected to the MQTT broker ${this.config.brokerUrl} (MQTT ${this.protocolVersion === 5 ? '5' : '3.1.1'})`,
+    );
     this.wasConnected = true;
     this.lastError = undefined;
     this.resetSession();
@@ -371,11 +492,10 @@ export class PglabApp {
       }
     });
     this.notify('session', { connected: true }, { all: true });
-    await this.updateStatus();
-    this.later('rebuild', TIMINGS.discoveryTimeout, () => this.rebuild());
+    await this.updateStatus({ urgent: true });
     this.later('discovery', TIMINGS.discoveryTimeout, () => {
       this.silentBroker = true;
-      return this.updateStatus();
+      return this.rebuild({ urgent: true });
     });
     this.badgeLoop();
   }
@@ -391,115 +511,188 @@ export class PglabApp {
   boardNotes() {
     const pending = [];
     const conflicts = [];
+    const renamed = [];
     let unsupported = 0;
-    for (const board of this.boards.values()) {
+    for (const board of this.announced.values()) {
       if (board.type !== 'E-BOARD') {
         unsupported += 1;
       }
+      const accepted = this.memory.boards.get(board.id);
       if (this.isPending(board)) {
-        pending.push(board.name);
+        pending.push(accepted?.name ?? board.name);
       }
       if (this.isConflict(board)) {
-        conflicts.push(board.name);
+        conflicts.push(accepted?.name ?? board.name);
+      }
+      if (accepted && accepted.name !== board.name) {
+        renamed.push(`${accepted.name} → ${board.name}`);
       }
     }
-    const sharedNames = [...this.nameOwners()]
-      .filter(([, ids]) => ids.length > 1)
-      .map(([name]) => name);
+    const single = this.single();
+    const accepted = this.memory.boards;
     return {
       invalid: this.config.invalidOutputs,
-      ambiguous: ambiguousOutputs(this.config.safeOutputs, this.single()),
+      ambiguous: ambiguousOutputs(this.config.safeOutputs, single),
+      unknownIds: [...this.config.safeOutputs]
+        .filter((entry) => entry.includes(':') && !accepted.has(entry.split(':')[0]))
+        .map((entry) => entry.split(':')[0]),
       pending,
       conflicts,
-      sharedNames,
+      renamed,
+      sharedNames: [...this.nameIndex()].filter(([, ids]) => ids.size > 1).map(([name]) => name),
       unsupported,
       rejected: this.rejected,
+      ignored: this.ignored.size,
+      protocol3: this.protocolVersion !== 5,
     };
   }
 
-  /** The status from what is known now. */
-  async updateStatus() {
+  /**
+   * The status from what is known now. Its counters change with every
+   * message a broker may flood: when only the text changes, it is posted at
+   * most every 10 s (at the end of the 10 s); `urgent` posts at once.
+   */
+  async updateStatus({ urgent = false } = {}) {
+    let next;
     if (this.config.problem) {
-      return this.setStatus(false, T.problem(this.config.problem));
-    }
-    if (!this.client?.connected) {
+      next = [false, T.problem(this.config.problem)];
+    } else if (!this.client?.connected) {
       return undefined;
+    } else if (this.announced.size === 0) {
+      next = [false, this.silentBroker ? T.noBoard : T.waiting];
+    } else {
+      next = [true, T.connected(this.announced.size, this.offeredCount(), this.boardNotes())];
     }
-    if (this.boards.size === 0) {
-      return this.setStatus(false, this.silentBroker ? T.noBoard : T.waiting);
+    // A change of state goes at once; a change of the counters only every 10 s.
+    if (!urgent && next[0] === this.lastStatusArgs?.[0]) {
+      const wait = this.lastStatusAt + TIMINGS.statusRefresh - this.now();
+      if (wait > 0) {
+        this.once('status', wait, () => this.updateStatus({ urgent: true }));
+        return undefined;
+      }
     }
-    return this.setStatus(
-      true,
-      T.connected(this.boards.size, this.model.devices.length, this.boardNotes()),
-    );
+    return this.setStatus(...next);
   }
 
   // --- Boards ------------------------------------------------------------------------
 
-  accepted(board) {
-    return this.memory?.boards.get(board.id);
+  accepted(id) {
+    return this.memory?.boards.get(id);
   }
 
-  /** The board published another layout than the accepted one. */
+  /** The board announced another type or layout than the accepted one. */
   isPending(board) {
-    const accepted = this.accepted(board);
+    const accepted = this.accepted(board.id);
     const now = layoutRecord(board);
     return (
       accepted !== undefined &&
-      (accepted.shutters !== now.shutters || accepted.boards !== now.boards)
+      (accepted.type !== now.type ||
+        accepted.shutters !== now.shutters ||
+        accepted.boards !== now.boards)
     );
   }
 
   /** Another MAC address answers for the board. */
   isConflict(board) {
-    const accepted = this.accepted(board);
+    const accepted = this.accepted(board.id);
     return accepted !== undefined && accepted.mac !== board.mac;
   }
 
-  /** name -> the ids of the boards of this session using it. */
-  nameOwners() {
-    const owners = new Map();
-    for (const board of this.boards.values()) {
-      owners.set(board.name, [...(owners.get(board.name) ?? []), board.id]);
+  /** The names of an accepted board: the accepted one, and the announced one when it differs. */
+  namesOf(id) {
+    const names = new Set();
+    const accepted = this.accepted(id);
+    if (accepted) {
+      names.add(accepted.name);
     }
-    return owners;
+    const announced = this.announced.get(id);
+    if (announced) {
+      names.add(announced.name);
+    }
+    return names;
   }
 
-  /** The board of a name in a topic: only when exactly one board of this session uses it. */
-  boardByName(name) {
-    let found;
-    for (const board of this.boards.values()) {
-      if (board.name === name) {
-        if (found) {
-          return undefined;
-        }
-        found = board;
+  /** name -> the ids of the boards using it (accepted, announced or ignored). */
+  nameIndex() {
+    const index = new Map();
+    const add = (name, id) => {
+      if (!index.has(name)) {
+        index.set(name, new Set());
+      }
+      index.get(name).add(id);
+    };
+    for (const id of this.memory?.boards.keys() ?? []) {
+      for (const name of this.namesOf(id)) {
+        add(name, id);
       }
     }
-    return found;
+    for (const [id, name] of this.ignored) {
+      add(name, id);
+    }
+    return index;
   }
 
-  /** One board only was ever accepted: a relay number alone then counts. */
+  /** The accepted board of a name in a topic: only when exactly one board uses it. */
+  boardByName(name) {
+    const ids = this.nameIndex().get(name);
+    if (!ids || ids.size !== 1) {
+      return undefined;
+    }
+    const [id] = ids;
+    return this.accepted(id) ? id : undefined;
+  }
+
+  /** One board only was accepted: a relay number alone then counts. */
   single() {
     return (this.memory?.boards.size ?? 0) === 1;
   }
 
-  /** The boards of this session with the layout the user accepted. */
-  modelBoards() {
+  /** The accepted boards, with what their announcement adds (IP, firmware). */
+  acceptedBoards() {
     const boards = [];
-    for (const board of this.boards.values()) {
-      const accepted = this.accepted(board);
-      if (accepted) {
-        boards.push({
-          ...board,
-          layout:
-            accepted.boards === null
-              ? null
-              : { shutters: accepted.shutters, boards: accepted.boards },
-        });
-      }
+    for (const [id, accepted] of this.memory?.boards ?? []) {
+      const announced = this.announced.get(id);
+      const sameMac = announced?.mac === accepted.mac;
+      boards.push({
+        id,
+        name: accepted.name,
+        type: accepted.type,
+        mac: accepted.mac,
+        ip: sameMac ? announced.ip : undefined,
+        fw: sameMac ? announced.fw : undefined,
+        layout:
+          accepted.boards === null
+            ? null
+            : { shutters: accepted.shutters, boards: accepted.boards },
+      });
     }
     return boards;
+  }
+
+  /** The routing tables and devices, from the accepted configurations. */
+  buildRouting() {
+    this.model = buildModel({
+      externalIds: (type, id) => this.gladys.externalIds(type, id),
+      boards: this.acceptedBoards(),
+      language: this.config.language,
+      safeOutputs: this.config.safeOutputs,
+      single: this.single(),
+    });
+    this.publisher.configure({
+      intervalSeconds: this.config.sensorInterval,
+      throttled: this.model.throttled,
+    });
+  }
+
+  /** The devices offered in the Discovery tab: those of the boards announced in this session. */
+  offeredDevices() {
+    return this.model.devices.filter((d) =>
+      this.announced.has(this.model.deviceOf.get(d.external_id)),
+    );
+  }
+
+  offeredCount() {
+    return this.offeredDevices().length;
   }
 
   // --- Messages --------------------------------------------------------------------
@@ -517,47 +710,64 @@ export class PglabApp {
       // Kept by the broker, maybe from long ago (the board stopped since): not a current state.
       return;
     }
-    const board = this.boardByName(info.name);
-    if (!board) {
+    const id = this.boardByName(info.name);
+    if (!id) {
       return;
     }
     if (info.kind === 'sensor') {
       const parsed = parseSensor(payload);
       if (parsed.error) {
-        this.warnOnce(`sensor:${board.id}`, `Sensor of ${board.id} ignored: ${parsed.error}`);
+        this.warnOnce(`sensor:${id}`, `Sensor of ${id} ignored: ${parsed.error}`);
         return;
       }
       if (parsed.outOfRange.length > 0) {
         this.warnOnce(
-          `range:${board.id}`,
-          `Sensor of ${board.id}: ${parsed.outOfRange.join(', ')} out of range, ignored`,
+          `range:${id}`,
+          `Sensor of ${id}: ${parsed.outOfRange.join(', ')} out of range, ignored`,
         );
       }
-      this.lastSeen.set(board.id, this.now());
-      this.recordTarget(`${board.id}/sensor/0`, parsed.values);
+      this.markSeen(id);
+      this.recordTarget(`${id}/sensor/0`, parsed.values);
       return;
     }
     const state = info.kind === 'relay' ? parseRelayState(payload) : parseShutterState(payload);
     if (state === undefined) {
-      this.warnOnce(
-        `state:${board.id}/${info.kind}`,
-        `A ${info.kind} state of ${board.id} ignored`,
-      );
+      this.warnOnce(`state:${id}/${info.kind}`, `A ${info.kind} state of ${id} ignored`);
       return;
     }
     const text = typeof state === 'boolean' ? (state ? 'ON' : 'OFF') : state;
-    const key = `${board.id}/${info.kind}/${info.index}`;
-    this.lastSeen.set(board.id, this.now());
+    const key = `${id}/${info.kind}/${info.index}`;
+    this.markSeen(id);
     this.notify(key, text);
     this.recordTarget(key, text);
+  }
+
+  /** The board published something useful: its badges at once when it was not seen. */
+  markSeen(id) {
+    const seen = this.lastSeen.get(id);
+    const fresh = seen !== undefined && this.now() - seen < TIMINGS.silence;
+    this.lastSeen.set(id, this.now());
+    if (!fresh) {
+      this.publishAllTransports().catch(() => {});
+    }
   }
 
   onDiscovery(id, payload, retained) {
     if (!payload || payload.length === 0) {
       // The board withdrew its discovery (the retained message was cleared).
-      if (this.boards.delete(id)) {
+      this.rawDiscovery.delete(id);
+      this.ignored.delete(id);
+      if (this.announced.delete(id)) {
         this.lastSeen.delete(id);
-        this.later('rebuild', TIMINGS.rebuildDebounce, () => this.rebuild());
+        this.scheduleRebuild();
+      }
+      return;
+    }
+    const raw = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+    if (this.rawDiscovery.get(id) === raw) {
+      // The same announcement again: nothing changes (it never delays the devices).
+      if (!retained && this.announced.has(id)) {
+        this.markSeen(id);
       }
       return;
     }
@@ -572,29 +782,34 @@ export class PglabApp {
       return;
     }
     const board = parsed.board;
-    if (!this.boards.has(id) && this.boards.size >= LIMITS.boards) {
-      this.rejected += 1;
-      this.warnOnce('boards:max', `More than ${LIMITS.boards} boards: ${id} ignored`);
-      return;
-    }
     if (!this.memory.boards.has(id)) {
       if (this.memory.boards.size >= LIMITS.boards) {
-        this.rejected += 1;
+        // Said in the status, with the advice to Scan (which forgets the boards gone).
+        if (this.ignored.size < LIMITS.boards || this.ignored.has(id)) {
+          this.ignored.set(id, board.name);
+        }
         this.warnOnce('layouts:max', `More than ${LIMITS.boards} boards known: ${id} ignored`);
+        this.updateStatus().catch(() => {});
         return;
       }
-      // A board never seen: its layout is accepted as it is announced (the user then
-      // chooses what to create in the Discovery tab). Later changes need a Scan.
+      // A board never seen: its configuration is accepted as it is announced (the user
+      // then chooses what to create in the Discovery tab). Later changes need a Scan.
       this.memory.boards.set(id, layoutRecord(board));
       this.saveMemory();
       this.logger.info(`New PG LAB board ${id} (${board.type})`);
     }
-    this.boards.set(id, board);
+    this.rawDiscovery.set(id, raw);
+    this.announced.set(id, board);
     if (!retained) {
-      this.lastSeen.set(id, this.now());
+      this.markSeen(id);
     }
     this.notify('discovery', board, { all: true });
-    this.later('rebuild', TIMINGS.rebuildDebounce, () => this.rebuild());
+    this.scheduleRebuild();
+  }
+
+  /** At most 1.5 s after the first discovery of a burst (never pushed back by the next ones). */
+  scheduleRebuild() {
+    this.once('rebuild', TIMINGS.rebuildDebounce, () => this.rebuild());
   }
 
   /** The values of a relay, a shutter or the sensor of a board, to its features. */
@@ -610,19 +825,11 @@ export class PglabApp {
 
   // --- Devices -----------------------------------------------------------------------
 
-  async rebuild({ force = false } = {}) {
-    this.model = buildModel({
-      externalIds: (type, id) => this.gladys.externalIds(type, id),
-      boards: this.modelBoards(),
-      language: this.config.language,
-      safeOutputs: this.config.safeOutputs,
-      single: this.single(),
-    });
-    this.publisher.configure({
-      intervalSeconds: this.config.sensorInterval,
-      throttled: this.model.throttled,
-    });
-    const devices = this.keepCreatedFeatures(this.model.devices);
+  async rebuild({ force = false, urgent = false } = {}) {
+    this.timers.clearTimeout(this.timersById.rebuild);
+    this.timersById.rebuild = undefined;
+    this.buildRouting();
+    const devices = this.keepCreatedFeatures(this.offeredDevices());
     const json = JSON.stringify(devices);
     if (force || json !== this.publishedDevices) {
       this.publishedDevices = json;
@@ -630,7 +837,7 @@ export class PglabApp {
         .publishDiscoveredDevices(devices)
         .catch((err) => this.logger.warn(`Publishing the devices failed: ${err.message}`));
     }
-    await this.updateStatus();
+    await this.updateStatus({ urgent });
     await this.publishAllTransports();
   }
 
@@ -707,27 +914,52 @@ export class PglabApp {
     }
   }
 
-  /**
-   * Scan (Discovery tab): the user accepts what the boards announce now (a
-   * changed layout or MAC included), and the broker sends the retained
-   * discoveries again.
-   */
-  async scan() {
-    let changed = false;
-    for (const board of this.boards.values()) {
-      if (this.isPending(board) || this.isConflict(board)) {
-        this.logger.info(`Accepting the new configuration of the PG LAB board ${board.id}`);
-        this.memory.boards.set(board.id, layoutRecord(board));
-        changed = true;
+  /** The accepted boards that have a device created in Gladys. */
+  boardsWithDevices() {
+    const ids = new Set();
+    for (const device of this.gladys.devices ?? []) {
+      const boardId = this.model.deviceOf.get(device.external_id);
+      if (boardId !== undefined) {
+        ids.add(boardId);
       }
     }
-    if (changed) {
+    return ids;
+  }
+
+  /**
+   * Scan (Discovery tab): the user accepts what the boards announce now (a
+   * changed name, type, layout or MAC included). The accepted set becomes
+   * the boards announced now, plus the accepted ones that have a device in
+   * Gladys (so their stop keeps its route), 64 at most: boards seen in
+   * passing are forgotten. The broker sends the retained discoveries again.
+   */
+  async scan() {
+    const next = new Map();
+    for (const id of this.boardsWithDevices()) {
+      if (next.size < LIMITS.boards && !this.announced.has(id)) {
+        next.set(id, this.memory.boards.get(id));
+      }
+    }
+    for (const board of this.announced.values()) {
+      if (next.size < LIMITS.boards) {
+        next.set(board.id, layoutRecord(board));
+      }
+    }
+    // The boards ignored over the limit get their chance now.
+    for (const id of this.ignored.keys()) {
+      this.rawDiscovery.delete(id);
+    }
+    this.ignored.clear();
+    const before = JSON.stringify(serializeMemory(this.memory));
+    this.memory.boards = next;
+    if (JSON.stringify(serializeMemory(this.memory)) !== before) {
+      this.logger.info(`Scan: ${next.size} PG LAB board(s) accepted`);
       await this.saveMemory();
     }
     if (this.client?.connected) {
       this.client.subscribe([SUBSCRIPTIONS[0]], { qos: 0 }, () => {});
     }
-    await this.rebuild({ force: true });
+    await this.rebuild({ force: true, urgent: true });
   }
 
   // --- Transport badge -------------------------------------------------------------------
@@ -738,7 +970,6 @@ export class PglabApp {
     const reachable =
       boardId !== undefined &&
       Boolean(this.client?.connected) &&
-      this.boards.has(boardId) &&
       seen !== undefined &&
       this.now() - seen < TIMINGS.silence;
     return reachable ? DEVICE_TRANSPORTS.LOCAL : DEVICE_TRANSPORTS.UNREACHABLE;
@@ -811,12 +1042,38 @@ export class PglabApp {
     return new Error(word(text, this.config.language));
   }
 
+  /** Why a relay command or an opening may not leave for this board now, else undefined. */
+  holdReason(id) {
+    const announced = this.announced.get(id);
+    if (!announced) {
+      return ERRORS.notAnnounced;
+    }
+    if (this.isConflict(announced)) {
+      return ERRORS.identityChanged;
+    }
+    if (this.isPending(announced)) {
+      return ERRORS.layoutChanged;
+    }
+    if (this.accepted(id).name !== announced.name) {
+      return ERRORS.renamed;
+    }
+    const index = this.nameIndex();
+    if ([...this.namesOf(id)].some((name) => (index.get(name)?.size ?? 0) > 1)) {
+      return ERRORS.nameShared;
+    }
+    return undefined;
+  }
+
   async setValue(_device, feature, value) {
     // The deadlines count from the arrival of the command, before any wait.
     const received = this.now();
+    const client = this.client;
+    if (!client?.connected) {
+      throw this.refusal(ERRORS.notConnected);
+    }
     const entry = this.model.features.get(feature?.external_id);
     if (!entry) {
-      throw this.refusal(ERRORS.unknownDevice);
+      throw this.refusal(ERRORS.notAccepted);
     }
     const { spec } = entry;
     if (spec.refusal) {
@@ -838,41 +1095,39 @@ export class PglabApp {
       }
       throw err;
     }
-    const board = this.boards.get(entry.boardId);
-    if (!board) {
-      throw this.refusal(ERRORS.unknownDevice);
-    }
-    const stop = command.payload === 'STOP';
-    if (!stop && this.nameOwners().get(board.name)?.length > 1) {
-      // The topic of this board is the topic of another one too.
-      throw this.refusal(ERRORS.nameShared);
-    }
-    if (!command.protective) {
-      if (this.isPending(board)) {
-        throw this.refusal(ERRORS.layoutChanged);
+    const id = entry.boardId;
+    let names;
+    if (command.protective) {
+      // Stop and close: under every name of the board, from the accepted configuration.
+      names = [...this.namesOf(id)];
+    } else {
+      const hold = this.holdReason(id);
+      if (hold) {
+        throw this.refusal(hold);
       }
-      if (this.isConflict(board)) {
-        throw this.refusal(ERRORS.identityChanged);
-      }
-    }
-    const client = this.client;
-    if (!client?.connected) {
-      throw this.refusal(ERRORS.notConnected);
+      names = [this.accepted(id).name];
     }
     if (this.now() > received + TIMINGS.commandSendBy) {
       throw this.refusal(ERRORS.tooSlow);
     }
-    const message = commandMessage(board.name, entry.kind, entry.index, command.payload);
     const answerBy = received + TIMINGS.commandAnswerBy;
     // The confirmation is awaited from before the publication (a fast board).
     const confirmation = this.waitFor(
-      `${board.id}/${entry.kind}/${entry.index}`,
+      `${id}/${entry.kind}/${entry.index}`,
       (state) => command.confirms.includes(state),
       answerBy,
     );
-    this.logger.debug(`PG LAB ${board.id} ${entry.kind} ${entry.index}: ${command.payload}`);
+    this.logger.debug(`PG LAB ${id} ${entry.kind} ${entry.index}: ${command.payload}`);
     try {
-      await this.send(client, message, answerBy);
+      await Promise.all(
+        names.map((name) =>
+          this.send(
+            client,
+            commandMessage(name, entry.kind, entry.index, command.payload),
+            answerBy,
+          ),
+        ),
+      );
     } catch (err) {
       confirmation.cancel();
       throw err;
@@ -926,7 +1181,7 @@ export class PglabApp {
     if (config.problem) {
       return T.problem(config.problem);
     }
-    const deadline = this.now() + TIMINGS.connectTimeout + 1000;
+    const deadline = this.now() + 2 * TIMINGS.connectTimeout + 1000;
     if (!(this.started && connectionKey(config) === this.connKey && this.client?.connected)) {
       await this.start(raw, { force: true });
       if (!this.client) {
@@ -934,30 +1189,29 @@ export class PglabApp {
           ? TEST.refused(this.lastError ?? 'refused')
           : T.unreachable(this.lastError ?? 'error');
       }
-      if (!this.client.connected) {
-        const session = this.waitFor('session', () => true, deadline);
-        const outcome = await session.promise;
+      // An MQTT 3.1.1 fallback or a first unanswered CONNECT may come first.
+      while (this.now() < deadline && !this.client?.connected) {
+        if (!this.client) {
+          break;
+        }
+        const outcome = await this.waitFor('session', () => true, deadline).promise;
         if (outcome?.refused) {
           return TEST.refused(outcome.refused);
         }
-        if (!outcome?.connected) {
-          return T.unreachable(outcome?.error ?? 'timeout');
-        }
+      }
+      if (!this.client?.connected) {
+        return this.memory.refused
+          ? TEST.refused(this.lastError ?? 'refused')
+          : T.unreachable(this.lastError ?? 'timeout');
       }
     }
-    if (this.boards.size === 0) {
-      const discovery = this.waitFor('discovery', () => true, this.now() + TIMINGS.testTimeout);
-      await discovery.promise;
+    if (this.announced.size === 0) {
+      await this.waitFor('discovery', () => true, this.now() + TIMINGS.testTimeout).promise;
     }
-    if (this.boards.size === 0) {
+    if (this.announced.size === 0) {
       return T.noBoard;
     }
-    const model = buildModel({
-      externalIds: (type, id) => this.gladys.externalIds(type, id),
-      boards: this.modelBoards(),
-      safeOutputs: this.config.safeOutputs,
-      single: this.single(),
-    });
-    return TEST.ok(this.boards.size, model.devices.length);
+    this.buildRouting();
+    return TEST.ok(this.announced.size, this.offeredCount());
   }
 }

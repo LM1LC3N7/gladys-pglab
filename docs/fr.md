@@ -61,7 +61,8 @@ déclarez sûr :
   `PGLAB_RELAY` dans l'onglet Découverte), par exemple `4, 5`. Avec
   plusieurs cartes, écrivez `id-carte:numéro` (paramètre `PGLAB_ID`), par
   exemple `DD53AC85:5` : un numéro seul n'est alors appliqué nulle part (le
-  statut le dit).
+  statut le dit, et nomme aussi un id qui ne correspond à aucune carte
+  acceptée).
 - **Autoriser les boutons « Allumer » / « Éteindre »** : désactivé par
   défaut. Tant qu'il l'est, les boutons des relais non déclarés sûrs
   n'envoient rien.
@@ -72,55 +73,88 @@ relais une sortie commandable : seuls ces deux réglages le font.
 ## Quand une carte change de configuration
 
 L'intégration garde, pour chaque carte, la configuration que vous avez
-acceptée : son adresse MAC, son nombre de volets et ses cartes d'extension
-(dans `/data/pglab-state.json`, sans utilisateur ni mot de passe). La
-première annonce d'une nouvelle carte est acceptée telle quelle. Si une
-carte annonce ensuite une autre configuration (d'autres volets, d'autres
-relais) ou arrive avec une autre adresse MAC, elle **n'est pas appliquée** :
-le statut le dit, et tant que vous n'avez pas cliqué sur **Scanner** dans
-l'onglet Découverte, ses relais et l'ouverture de ses volets sont refusés.
-Cliquer sur **Scanner** accepte ce qu'annoncent les cartes à ce moment-là.
+acceptée : son nom (que portent ses topics MQTT), son type, son adresse MAC,
+son nombre de volets et ses cartes d'extension (dans
+`/data/pglab-state.json`, sans utilisateur ni mot de passe). Les appareils
+et le routage des commandes en viennent, dès le démarrage, avant même que
+la carte s'annonce. La première annonce d'une nouvelle carte est acceptée
+telle quelle (64 cartes au plus).
 
-Deux cartes du même nom partagent leurs topics : leurs états sont ignorés
-et toute commande sauf un arrêt est refusée jusqu'à ce que l'une d'elles
-soit renommée (ou que l'ancienne annonce retenue d'une carte retirée soit
-effacée du broker).
+Si une carte annonce ensuite un autre nom, type, adresse MAC ou une autre
+configuration (d'autres volets, d'autres relais), elle **n'est pas
+appliquée** : le statut le dit (pour un nom : « ancien → nouveau »), et tant
+que vous n'avez pas cliqué sur **Scanner** dans l'onglet Découverte, ses
+relais et l'ouverture de ses volets sont refusés. L'arrêt et la fermeture
+partent quand même, sous le nom accepté et sous le nom annoncé.
+
+Cliquer sur **Scanner** accepte ce qu'annoncent les cartes à ce moment-là,
+et oublie les cartes qui ne s'annoncent plus et n'ont aucun appareil dans
+Gladys. Au-delà de 64 cartes acceptées, une nouvelle carte est ignorée et
+le statut conseille un Scan.
+
+Deux cartes du même nom partagent leurs topics : leurs états sont ignorés,
+leurs relais et ouvertures refusés (l'arrêt et la fermeture les atteignent
+toutes) jusqu'à ce que l'une d'elles soit renommée (ou que l'ancienne
+annonce retenue d'une carte retirée soit effacée du broker) et que vous
+Scanniez.
 
 ## Quand une commande est refusée
 
-Un **arrêt** de volet n'est refusé que dans ces cas :
+Un **arrêt** ou une **fermeture** de volet n'est refusé que dans ces cas :
 
-- le volet n'est pas connu dans cette session (la carte ne s'est pas
-  annoncée depuis la connexion au broker, ou a retiré son annonce) ;
 - le broker n'est pas connecté ;
+- le volet ne fait pas partie de la configuration acceptée de sa carte (un
+  Scan a accepté une configuration sans lui) ;
 - la valeur reçue n'est pas une commande de volet ;
 - la commande n'a pas pu partir dans les 3,5 s après le clic (rien
-  n'attend devant un arrêt, ce cas ne devrait pas arriver).
+  n'attend devant elle, ce cas ne devrait pas arriver).
 
-Une **fermeture** est refusée dans les mêmes cas, et aussi quand deux cartes
-portent le même nom. Une **ouverture** et les commandes de relais sont
-refusées dans ces cas, et aussi quand la configuration de la carte a changé
-ou qu'une autre adresse MAC répond pour elle (jusqu'à un Scan), quand le
-relais n'est pas déclaré sûr (son interrupteur), ou quand les boutons sont
-désactivés (ses boutons).
+Une **ouverture** et les commandes de relais sont refusées dans ces cas, et
+aussi :
 
-Une commande part une fois, jamais mise en attente quand le broker est
-coupé. Quand la carte ne publie pas l'état attendu dans les 4 secondes
-environ, Gladys indique « envoyée, sans confirmation ».
+- quand la carte ne s'est pas annoncée depuis la connexion au broker (après
+  un redémarrage ou une reconnexion, jusqu'au retour de son annonce) ;
+- quand elle a annoncé un autre nom, type, adresse MAC ou une autre
+  configuration (jusqu'à un Scan) ;
+- quand deux cartes portent le même nom ;
+- pour un relais : quand il n'est pas déclaré sûr (son interrupteur), ou
+  quand les boutons sont désactivés (ses boutons).
+
+Une commande part une fois, jamais mise en attente par l'intégration quand
+le broker est coupé. Quand la carte ne publie pas l'état attendu dans les
+4 secondes environ, Gladys indique « envoyée, sans confirmation » : le
+message est bien parti, et si le broker était figé il peut encore atteindre
+la carte plus tard, au réveil du broker.
 
 ## Problèmes de connexion
 
-- **Broker injoignable** : l'intégration réessaie toutes les 10 secondes.
-- **Identifiants refusés** : l'intégration s'arrête pour de bon (même après
-  un redémarrage) et ne réessaie rien d'elle-même. Enregistrez d'autres
-  identifiants, ou cliquez sur **Tester la connexion** ; l'arrêt est levé dès
-  qu'une connexion réussit.
+- **Broker injoignable** : l'intégration réessaie toutes les 10 secondes,
+  le statut dit pourquoi.
+- **Identifiants refusés**, ou **broker qui ferme la connexion (ou ne
+  répond pas) après avoir reçu les identifiants, deux fois de suite** :
+  l'intégration s'arrête pour de bon (même après un redémarrage) et ne
+  réessaie rien d'elle-même. Enregistrez d'autres identifiants, ou cliquez
+  sur **Tester la connexion** ; l'arrêt est levé dès qu'une connexion
+  réussit. Sans utilisateur ni mot de passe, l'intégration continue
+  d'essayer.
+- **Un mot de passe sans utilisateur** : refusé dans la configuration (MQTT
+  ne peut pas l'envoyer).
 - **Aucune carte ne s'est annoncée** : vérifiez les réglages MQTT des cartes.
 - Une carte qui n'a rien publié depuis 5 minutes est affichée injoignable
   (la carte envoie sa température environ chaque minute).
+- **TLS** : laissez « Vérifier le certificat TLS » activé. Désactivé,
+  l'utilisateur et le mot de passe partent à quiconque répond à l'adresse
+  du broker : rien ne vérifie qui c'est.
 
 ## Limites
 
+- MQTT sur TCP ou TLS (`mqtt://`, `mqtts://`), pas de WebSocket.
+- L'intégration utilise MQTT 5 et demande au broker aucun message de plus
+  de 8 Ko (Mosquitto le respecte). Un message de plus de 8 Ko qui arrive
+  quand même coupe la connexion avant d'être lu (une reconnexion suit).
+  Avec un broker sans MQTT 5, l'intégration utilise MQTT 3.1.1 et le dit
+  dans le statut : un tel message coupe alors la connexion à chaque nouvel
+  envoi (un énorme message retenu doit être effacé du broker).
 - Les cartes E-Switch et E-Relay sont reconnues mais n'offrent encore rien
   (pypglab 0.0.5 ne leur donne aucune sortie).
 - Les entrées de la carte ne sont pas proposées : pypglab n'a pas de topic

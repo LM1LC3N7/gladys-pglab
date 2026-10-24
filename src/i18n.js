@@ -29,9 +29,14 @@ const KINDS = {
   shutter: both('shutter', 'volet'),
 };
 
-/** "E-BOARD-DD53AC85 relay 5", "E-BOARD-DD53AC85 volet 0". */
-export const deviceName = (kind, boardName, n, language) =>
-  `${boardName} ${word(KINDS[kind], language)} ${n}`;
+/**
+ * "E-BOARD-DD53AC85 relay 5", "E-BOARD-DD53AC85 volet 0": at most 60
+ * characters, the board part shortened so the suffix always stays.
+ */
+export const deviceName = (kind, boardName, n, language) => {
+  const suffix = ` ${word(KINDS[kind], language)} ${n}`;
+  return `${boardName.slice(0, 60 - suffix.length).trimEnd()}${suffix}`;
+};
 
 const BROKER_PROBLEMS = {
   empty: both('the address of the MQTT broker is empty', 'l’adresse du broker MQTT est vide'),
@@ -65,11 +70,25 @@ function notes(n, language) {
         : `Non appliqué dans « Relais déclarés sûrs » : ${list(n.ambiguous)} (ambigu avec plusieurs cartes : utilisez id-carte:numéro).`,
     );
   }
+  if (n.unknownIds.length > 0) {
+    lines.push(
+      en
+        ? `Not applied in "Relays declared safe": no accepted board has the id ${list(n.unknownIds)} (parameter PGLAB_ID).`
+        : `Non appliqué dans « Relais déclarés sûrs » : aucune carte acceptée n’a l’id ${list(n.unknownIds)} (paramètre PGLAB_ID).`,
+    );
+  }
+  if (n.renamed.length > 0) {
+    lines.push(
+      en
+        ? `Another name announced: ${list(n.renamed)}. Not applied: its relays and the opening of its shutters are refused until you click "Scan" in the Discovery tab (stop and close go under both names).`
+        : `Autre nom annoncé : ${list(n.renamed)}. Non appliqué : ses relais et l’ouverture de ses volets sont refusés jusqu’à ce que vous cliquiez sur « Scanner » dans l’onglet Découverte (arrêt et fermeture partent sous les deux noms).`,
+    );
+  }
   if (n.pending.length > 0) {
     lines.push(
       en
-        ? `The configuration of ${list(n.pending)} changed (shutters or relays): not applied, its relays and the opening of its shutters are refused until you click "Scan" in the Discovery tab.`
-        : `La configuration de ${list(n.pending)} a changé (volets ou relais) : non appliquée, ses relais et l’ouverture de ses volets sont refusés jusqu’à ce que vous cliquiez sur « Scanner » dans l’onglet Découverte.`,
+        ? `The configuration of ${list(n.pending)} changed (type, shutters or relays): not applied, its relays and the opening of its shutters are refused until you click "Scan" in the Discovery tab.`
+        : `La configuration de ${list(n.pending)} a changé (type, volets ou relais) : non appliquée, ses relais et l’ouverture de ses volets sont refusés jusqu’à ce que vous cliquiez sur « Scanner » dans l’onglet Découverte.`,
     );
   }
   if (n.conflicts.length > 0) {
@@ -82,8 +101,8 @@ function notes(n, language) {
   if (n.sharedNames.length > 0) {
     lines.push(
       en
-        ? `Several boards are named ${list(n.sharedNames)}: their states are ignored and their relays and openings refused (rename one of them, or remove the old retained discovery from the broker).`
-        : `Plusieurs cartes s’appellent ${list(n.sharedNames)} : leurs états sont ignorés, leurs relais et ouvertures refusés (renommez l’une d’elles, ou effacez l’ancienne découverte retenue sur le broker).`,
+        ? `Several boards are named ${list(n.sharedNames)}: their states are ignored and their relays and openings refused, stop and close reach all of them (rename one of them, or remove the old retained discovery from the broker, then Scan).`
+        : `Plusieurs cartes s’appellent ${list(n.sharedNames)} : leurs états sont ignorés, leurs relais et ouvertures refusés, arrêt et fermeture les atteignent toutes (renommez l’une d’elles, ou effacez l’ancienne découverte retenue sur le broker, puis Scannez).`,
     );
   }
   if (n.unsupported > 0) {
@@ -96,8 +115,22 @@ function notes(n, language) {
   if (n.rejected > 0) {
     lines.push(
       en
-        ? `${n.rejected} discovery message(s) ignored (invalid, or more than 64 boards).`
-        : `${n.rejected} message(s) de découverte ignoré(s) (invalide(s), ou plus de 64 cartes).`,
+        ? `${n.rejected} invalid discovery message(s) ignored.`
+        : `${n.rejected} message(s) de découverte invalide(s) ignoré(s).`,
+    );
+  }
+  if (n.ignored > 0) {
+    lines.push(
+      en
+        ? `${n.ignored} new board(s) ignored: 64 boards are already accepted. Click "Scan" in the Discovery tab to forget the boards no longer announced and without a device.`
+        : `${n.ignored} nouvelle(s) carte(s) ignorée(s) : 64 cartes sont déjà acceptées. Cliquez sur « Scanner » dans l’onglet Découverte pour oublier les cartes qui ne s’annoncent plus et sans appareil.`,
+    );
+  }
+  if (n.protocol3) {
+    lines.push(
+      en
+        ? 'The broker does not support MQTT 5: it does not limit the size of the messages it sends; a message over 8 KB cuts the connection.'
+        : 'Le broker ne gère pas MQTT 5 : il ne limite pas la taille des messages qu’il envoie ; un message de plus de 8 Ko coupe la connexion.',
     );
   }
   return lines;
@@ -115,6 +148,12 @@ export const T = {
     if (problem?.startsWith('broker:')) {
       const p = BROKER_PROBLEMS[problem.slice(7)] ?? BROKER_PROBLEMS.invalid;
       return both(`Configuration: ${p.en}.`, `Configuration : ${p.fr}.`);
+    }
+    if (problem === 'user') {
+      return both(
+        'Configuration: a password without a user name cannot be sent to an MQTT broker: type the user name too.',
+        'Configuration : un mot de passe sans utilisateur ne peut pas être envoyé à un broker MQTT : saisissez aussi l’utilisateur.',
+      );
     }
     return both(
       'Configuration: the password is too long.',
@@ -183,9 +222,17 @@ export const ERRORS = {
     'The MQTT broker is not connected: the command was not sent.',
     'Le broker MQTT n’est pas connecté : la commande n’a pas été envoyée.',
   ),
-  unknownDevice: both(
-    'This board has not announced itself on the broker since the connection: the command was not sent.',
-    'Cette carte ne s’est pas annoncée sur le broker depuis la connexion : la commande n’a pas été envoyée.',
+  notAnnounced: both(
+    'This board has not announced itself on the broker since the connection: nothing sent (only a stop or a close of a shutter goes before).',
+    'Cette carte ne s’est pas annoncée sur le broker depuis la connexion : rien n’a été envoyé (seuls l’arrêt et la fermeture d’un volet partent avant).',
+  ),
+  notAccepted: both(
+    'This device is not (or no longer) part of the configuration accepted for its board: nothing sent.',
+    'Cet appareil ne fait pas (ou plus) partie de la configuration acceptée pour sa carte : rien n’a été envoyé.',
+  ),
+  renamed: both(
+    'The board announced another name: click "Scan" in the Discovery tab to accept it. Nothing sent.',
+    'La carte a annoncé un autre nom : cliquez sur « Scanner » dans l’onglet Découverte pour l’accepter. Rien n’a été envoyé.',
   ),
   unsafeOutput: both(
     'This relay is not declared safe in the configuration: nothing sent. Use its "Turn on" / "Turn off" buttons, or declare it safe.',
@@ -196,16 +243,16 @@ export const ERRORS = {
     'Les boutons « Allumer » / « Éteindre » sont désactivés : autorisez-les dans la configuration de l’intégration. Rien n’a été envoyé.',
   ),
   layoutChanged: both(
-    'The board published another configuration (shutters or relays): click "Scan" in the Discovery tab to accept it. Nothing sent.',
-    'La carte a publié une autre configuration (volets ou relais) : cliquez sur « Scanner » dans l’onglet Découverte pour l’accepter. Rien n’a été envoyé.',
+    'The board published another configuration (type, shutters or relays): click "Scan" in the Discovery tab to accept it. Nothing sent.',
+    'La carte a publié une autre configuration (type, volets ou relais) : cliquez sur « Scanner » dans l’onglet Découverte pour l’accepter. Rien n’a été envoyé.',
   ),
   identityChanged: both(
     'Another MAC address answers for this board: click "Scan" in the Discovery tab to accept it. Nothing sent.',
     'Une autre adresse MAC répond pour cette carte : cliquez sur « Scanner » dans l’onglet Découverte pour l’accepter. Rien n’a été envoyé.',
   ),
   nameShared: both(
-    'Several boards use the name of this one: the command would reach all of them. Nothing sent.',
-    'Plusieurs cartes portent le nom de celle-ci : la commande les atteindrait toutes. Rien n’a été envoyé.',
+    'Several boards use the name of this one: the command would reach all of them. Nothing sent (a stop or a close of a shutter does go).',
+    'Plusieurs cartes portent le nom de celle-ci : la commande les atteindrait toutes. Rien n’a été envoyé (l’arrêt et la fermeture d’un volet partent).',
   ),
   tooSlow: both(
     'The command could not leave in time: it was not sent.',

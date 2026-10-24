@@ -246,7 +246,7 @@ export function buildModel({
       });
     }
     model.devices.push({
-      name: name.slice(0, LIMITS.nameLength),
+      name,
       external_id: ids.device,
       params: [
         { name: 'PGLAB_ID', value: board.id },
@@ -263,11 +263,20 @@ export function buildModel({
     if (board.type !== 'E-BOARD' || !board.layout || board.layout.boards === null) {
       continue;
     }
-    add(board, 'board', board.id, 'sensor', 0, board.name, boardFeatures(), [
-      { name: 'PGLAB_MAC', value: board.mac },
-      { name: 'PGLAB_IP', value: board.ip },
-      { name: 'PGLAB_FIRMWARE', value: board.fw },
-    ]);
+    add(
+      board,
+      'board',
+      board.id,
+      'sensor',
+      0,
+      board.name.slice(0, LIMITS.nameLength),
+      boardFeatures(),
+      [
+        { name: 'PGLAB_MAC', value: board.mac },
+        ...(board.ip ? [{ name: 'PGLAB_IP', value: board.ip }] : []),
+        ...(board.fw ? [{ name: 'PGLAB_FIRMWARE', value: board.fw }] : []),
+      ],
+    );
     const layout = layoutOf(board.layout);
     for (const n of layout.shutters) {
       add(

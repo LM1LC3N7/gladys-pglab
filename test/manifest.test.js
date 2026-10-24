@@ -164,7 +164,8 @@ test('the keys of the manifest are the keys of the code', () => {
   }
   const testAction = manifest.actions.find((a) => a.key === ACTIONS.TEST);
   assert.ok(
-    testAction.timeout_seconds * 1000 > TIMINGS.connectTimeout + 1000 + TIMINGS.testTimeout + 5000,
+    testAction.timeout_seconds * 1000 >
+      2 * TIMINGS.connectTimeout + 1000 + TIMINGS.testTimeout + 2000,
     'the connection test answers before Gladys gives up',
   );
   assert.ok(testAction.timeout_seconds >= 5 && testAction.timeout_seconds <= 120);

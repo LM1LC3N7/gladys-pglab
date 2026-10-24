@@ -46,6 +46,8 @@ export class FakeMqttClient extends EventEmitter {
 
   // --- The broker side ---
   open() {
+    this.emit('packetsend', { cmd: 'connect' });
+    this.emit('packetreceive', { cmd: 'connack' });
     this.connected = true;
     this.emit('connect');
   }
@@ -55,7 +57,19 @@ export class FakeMqttClient extends EventEmitter {
     this.emit('close');
   }
 
+  /** The broker takes the CONNECT and closes (or times out) without CONNACK. */
+  unanswered({ timeout = false } = {}) {
+    this.emit('packetsend', { cmd: 'connect' });
+    if (timeout) {
+      this.emit('error', new Error('connack timeout'));
+    }
+    this.connected = false;
+    this.emit('close');
+  }
+
   refuse(code = 5) {
+    this.emit('packetsend', { cmd: 'connect' });
+    this.emit('packetreceive', { cmd: 'connack' });
     const err = new Error('Connection refused: Not authorized');
     err.code = code;
     this.emit('error', err);
@@ -85,8 +99,9 @@ export function fakeConnector(responder) {
   const connector = {
     clients,
     responder,
-    connect: (config) => {
+    connect: (config, options = {}) => {
       const client = new FakeMqttClient(config, (...args) => connector.responder?.(...args));
+      client.options = options;
       clients.push(client);
       return client;
     },

@@ -19,10 +19,14 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (PglabApp)
                                   ├─ src/mqtt.js       mqtt.js client, one session, nothing queued offline
                                   ├─ src/protocol.js   PG LAB topics, parsers, messages (pypglab)
                                   ├─ src/model.js      boards -> Gladys devices (pure)
-                                  ├─ src/store.js      /data: refused credentials, accepted layouts (no secret)
+                                  ├─ src/store.js      /data: refused credentials, accepted boards (no secret)
                                   └─ src/publisher.js  states within 300/min
 ```
 
+- **Bounded**: MQTT 5 with `maximumPacketSize: 8192`, and a guard on the
+  raw socket that cuts any packet announced over 8 KB before reading it
+  (TCP or TLS only; MQTT 3.1.1 when the broker lacks MQTT 5, said in the
+  status).
 - **Reads**: subscribes to `pglab/discovery/+/config`, `pglab/+/relay/+/state`,
   `pglab/+/shutter/+/state` and `pglab/+/sensor/value` only, and matches each
   topic exactly. A discovery is read up to 4 KB and checked field by field
@@ -33,14 +37,17 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (PglabApp)
   `ext:<selector>:shutter:<id>-<n>` (the board id of the discovery, never
   its name); features `<device>:<role>`; a created device never loses a
   feature.
-- **Accepted layouts**: per board, its MAC and layout as first announced,
-  kept in `/data`; a discovery that changes them is not applied without a
-  Scan, and meanwhile its relays and the opening of its shutters are
-  refused (stop and close are not).
+- **Accepted boards**: per board, its name, type, MAC and layout as first
+  announced, kept in `/data`; the routing comes from them from the start. A
+  discovery that changes them is not applied without a Scan, and meanwhile
+  its relays and the opening of its shutters are refused. Stop and close
+  go without any announcement, refused only when the broker is not
+  connected or the shutter left the accepted configuration.
 - **Commands**: one MQTT message, never queued while the broker is down,
   sent within 3.5 s or refused unsent, confirmed by the state the board
   publishes back by 4.3 s, else "sent, without confirmation".
-- **Failures**: credentials refused by the broker stop the client for good
+- **Failures**: credentials refused by the broker, or a CONNECT carrying
+  them closed or unanswered twice in a row, stop the client for good
   (persisted, no automatic new try); an unreachable broker is tried every
   10 s; a reconnection to Gladys keeps the client and re-sends the status,
   the Discovery and the badges. The test button uses the same single

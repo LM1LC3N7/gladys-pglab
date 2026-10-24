@@ -125,6 +125,8 @@ test('connects, subscribes, offers the board, its shutters and relays', async (t
   assert.equal(ctx.gladys.fake.connectionStatus.connected, true);
   assert.match(ctx.gladys.fake.connectionStatus.message.en, /1 PG LAB board\(s\), 15 device/);
   assert.deepEqual(ctx.store.data.boards[BOARD_ID], {
+    name: BOARD_NAME,
+    type: 'E-BOARD',
     mac: MAC,
     shutters: 2,
     boards: '11000000',
@@ -275,6 +277,7 @@ test('a changed layout is never applied by itself: refused until a Scan', async 
     retain: true,
   });
   await ctx.tick(TIMINGS.rebuildDebounce);
+  await ctx.tick(TIMINGS.statusRefresh);
   assert.match(
     ctx.gladys.fake.connectionStatus.message.en,
     /configuration of E-BOARD-DD53AC85 changed/,
@@ -305,7 +308,9 @@ test('a changed layout is never applied by itself: refused until a Scan', async 
 test('after a restart, a layout that changed meanwhile is not accepted either', async (t) => {
   const memory = {
     refused: false,
-    boards: { [BOARD_ID]: { mac: MAC, shutters: 0, boards: '10000000' } },
+    boards: {
+      [BOARD_ID]: { name: BOARD_NAME, type: 'E-BOARD', mac: MAC, shutters: 0, boards: '10000000' },
+    },
   };
   const ctx = await setup(t, { memory, cfg: { ...BASE, allow_output_buttons: true } });
   await online(ctx);
@@ -324,6 +329,7 @@ test('another MAC address for a known board: relays refused until a Scan', async
   const relay = await create(ctx, ext.relay(4));
   client.deliver(topic.discovery(), discovery({ mac: '11:22:33:44:55:66' }), { retain: true });
   await ctx.tick(TIMINGS.rebuildDebounce);
+  await ctx.tick(TIMINGS.statusRefresh);
   assert.match(ctx.gladys.fake.connectionStatus.message.en, /Another MAC address/);
   let ack = await command(ctx, relay, 'power', 1);
   assert.equal(ack.success, false);
@@ -335,7 +341,7 @@ test('another MAC address for a known board: relays refused until a Scan', async
   assert.equal(ack.success, true, ack.error);
 });
 
-test('two boards with the same name: states ignored, only a stop leaves', async (t) => {
+test('two boards with the same name: states ignored, only stop and close leave', async (t) => {
   const ctx = await setup(t, { cfg: { ...BASE, safe_outputs: `${BOARD_ID}:4` } });
   const client = await online(ctx);
   const relay = await create(ctx, ext.relay(4));
@@ -344,6 +350,7 @@ test('two boards with the same name: states ignored, only a stop leaves', async 
     retain: true,
   });
   await ctx.tick(TIMINGS.rebuildDebounce);
+  await ctx.tick(TIMINGS.statusRefresh);
   assert.match(ctx.gladys.fake.connectionStatus.message.en, /Several boards are named/);
   client.deliver(topic.relay(4), 'ON');
   await ctx.tick(TIMINGS.flushInterval);
@@ -352,16 +359,25 @@ test('two boards with the same name: states ignored, only a stop leaves', async 
   for (const [device, role, value] of [
     [relay, 'power', 1],
     [shutter, 'shutter', 1],
-    [shutter, 'shutter', -1],
   ]) {
     const ack = await command(ctx, device, role, value);
     assert.equal(ack.success, false);
     assert.match(ack.error, /Plusieurs cartes portent le nom/);
   }
   assert.equal(sets(client).length, before);
-  const ack = await command(ctx, shutter, 'shutter', 0, { ticks: [0, TIMINGS.commandAnswerBy] });
-  assert.match(ack.error ?? '', /sans confirmation/, 'the stop leaves (its echo is ignored)');
-  assert.equal(sets(client).at(-1).payload, 'STOP');
+  for (const [value, payload] of [
+    [0, 'STOP'],
+    [-1, 'CLOSE'],
+  ]) {
+    const ack = await command(ctx, shutter, 'shutter', value, {
+      ticks: [0, TIMINGS.commandAnswerBy],
+    });
+    assert.match(ack.error ?? '', /sans confirmation/, `${payload} leaves (its echo is ignored)`);
+    assert.deepEqual(
+      [sets(client).at(-1).topic, sets(client).at(-1).payload],
+      [topic.shutterSet(0), payload],
+    );
+  }
 });
 
 test('a discovery never makes a relay a switch, even for a new board', async (t) => {
@@ -377,6 +393,7 @@ test('a discovery never makes a relay a switch, even for a new board', async (t)
   await ctx.tick(TIMINGS.rebuildDebounce);
   assert.equal(discovered(ctx.gladys, ext.relay(4)).features[0].category, 'unknown');
   assert.equal(discovered(ctx.gladys, ext.relay(4, 'B2')).features[0].category, 'unknown');
+  await ctx.tick(TIMINGS.statusRefresh);
   assert.match(
     ctx.gladys.fake.connectionStatus.message.en,
     /Not applied in "Relays declared safe": 4/,
@@ -394,7 +411,11 @@ test('invalid discoveries are counted, never shown, never trusted', async (t) =>
   client.deliver(topic.discovery('X3'), 'not json');
   client.deliver(topic.discovery('X4'), discovery({ id: 'X4', manufacturer: 'Evil' }));
   await ctx.tick(TIMINGS.rebuildDebounce);
-  assert.match(ctx.gladys.fake.connectionStatus.message.en, /3 discovery message\(s\) ignored/);
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(
+    ctx.gladys.fake.connectionStatus.message.en,
+    /3 invalid discovery message\(s\) ignored/,
+  );
   assert.deepEqual(Object.keys(ctx.store.data.boards), [BOARD_ID]);
 });
 
@@ -541,4 +562,252 @@ test('transport badges: unreachable until the board publishes, and after a silen
   assert.equal(badge(), DEVICE_TRANSPORTS.LOCAL);
   await ctx.tick(TIMINGS.silence + TIMINGS.badgeInterval);
   assert.equal(badge(), DEVICE_TRANSPORTS.UNREACHABLE);
+});
+
+// --- Review r1 --------------------------------------------------------------------
+
+test('stop and close are routed from /data: before any announcement, and after a withdrawal', async (t) => {
+  const memory = {
+    refused: false,
+    boards: {
+      [BOARD_ID]: { name: BOARD_NAME, type: 'E-BOARD', mac: MAC, shutters: 2, boards: '11000000' },
+    },
+  };
+  const shutterDevice = {
+    name: 'Volet',
+    external_id: ext.shutter(0),
+    features: [
+      {
+        name: 'Ouvrir / fermer',
+        external_id: `${ext.shutter(0)}:shutter`,
+        category: 'shutter',
+        type: 'state',
+        min: -1,
+        max: 1,
+        read_only: false,
+      },
+    ],
+  };
+  const ctx = await setup(t, { memory, devices: [shutterDevice] });
+  const client = ctx.broker.clients[0];
+  client.open();
+  await settle();
+  // Connected, no announcement yet: the stop and the close leave; the opening does not.
+  for (const [value, payload] of [
+    [0, 'STOP'],
+    [-1, 'CLOSE'],
+  ]) {
+    const ack = await command(ctx, shutterDevice, 'shutter', value);
+    assert.equal(ack.success, true, `${payload}: ${ack.error}`);
+    assert.deepEqual(
+      [sets(client).at(-1).topic, sets(client).at(-1).payload],
+      [topic.shutterSet(0), payload],
+    );
+  }
+  let ack = await command(ctx, shutterDevice, 'shutter', 1);
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /ne s’est pas annoncée/);
+  // The board announces, then withdraws its discovery: the stop still leaves.
+  client.deliver(topic.discovery(), discovery(), { retain: true });
+  await settle();
+  client.deliver(topic.discovery(), '');
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  ack = await command(ctx, shutterDevice, 'shutter', 0);
+  assert.equal(ack.success, true, ack.error);
+  // Broker down: refused with the right reason.
+  client.close();
+  await settle();
+  ack = await command(ctx, shutterDevice, 'shutter', 0);
+  assert.match(ack.error, /broker MQTT n’est pas connecté/);
+});
+
+test('another type for the same id: devices kept, stop and close allowed, a precise reason', async (t) => {
+  const ctx = await setup(t, { cfg: { ...BASE, safe_outputs: '4' } });
+  const client = await online(ctx);
+  const relay = await create(ctx, ext.relay(4));
+  const shutter = await create(ctx, ext.shutter(0));
+  client.deliver(topic.discovery(), discovery({ type: 'E-SWITCH' }), { retain: true });
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  assert.ok(discovered(ctx.gladys, ext.relay(4)), 'the accepted devices stay offered');
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /changed \(type, shutters or relays\)/);
+  let ack = await command(ctx, relay, 'power', 1);
+  assert.match(ack.error, /autre configuration \(type, volets ou relais\)/);
+  ack = await command(ctx, shutter, 'shutter', 1);
+  assert.match(ack.error, /autre configuration/);
+  for (const value of [0, -1]) {
+    ack = await command(ctx, shutter, 'shutter', value);
+    assert.equal(ack.success, true, ack.error);
+  }
+  assert.equal(ctx.store.data.boards[BOARD_ID].type, 'E-BOARD');
+});
+
+test('another name is applied only by a Scan; stop and close go under both names', async (t) => {
+  const ctx = await setup(t, { cfg: { ...BASE, safe_outputs: `${BOARD_ID}:4` } });
+  const client = await online(ctx);
+  const relay = await create(ctx, ext.relay(4));
+  const shutter = await create(ctx, ext.shutter(0));
+  ctx.b.name = 'garage';
+  client.deliver(topic.discovery(), discovery({ name: 'garage' }), { retain: true });
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /E-BOARD-DD53AC85 → garage/);
+  const before = sets(client).length;
+  let ack = await command(ctx, relay, 'power', 1);
+  assert.match(ack.error, /autre nom/);
+  ack = await command(ctx, shutter, 'shutter', 1);
+  assert.match(ack.error, /autre nom/);
+  assert.equal(sets(client).length, before, 'nothing sent to pglab/garage/...');
+  ack = await command(ctx, shutter, 'shutter', 0);
+  assert.equal(ack.success, true, ack.error);
+  assert.deepEqual(
+    sets(client)
+      .slice(before)
+      .map((p) => p.topic)
+      .sort(),
+    [topic.shutterSet(0), topic.shutterSet(0, 'garage')].sort(),
+  );
+  await ctx.gladys.fake.scanRequest();
+  await settle();
+  assert.equal(ctx.store.data.boards[BOARD_ID].name, 'garage');
+  ack = await command(ctx, relay, 'power', 1);
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(sets(client).at(-1).topic, topic.relaySet(4, 'garage'));
+});
+
+test('a flood of invalid discoveries: two status posts at most', async (t) => {
+  const ctx = await setup(t);
+  const client = await online(ctx);
+  await ctx.tick(TIMINGS.statusRefresh);
+  const before = ctx.gladys.fake.connectionStatuses.length;
+  for (let i = 0; i < 1000; i += 1) {
+    client.deliver(topic.discovery(), discovery({ manufacturer: `X${i}` }));
+  }
+  await ctx.tick(TIMINGS.statusRefresh);
+  await ctx.tick(TIMINGS.statusRefresh);
+  const posts = ctx.gladys.fake.connectionStatuses.length - before;
+  assert.ok(posts >= 1 && posts <= 2, `${posts} posts`);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /1000 invalid discovery/);
+});
+
+test('a discovery repeated every second never delays the devices', async (t) => {
+  const ctx = await setup(t);
+  const client = ctx.broker.clients[0];
+  client.open();
+  await settle();
+  for (let i = 0; i < 3; i += 1) {
+    client.deliver(topic.discovery(), discovery());
+    client.deliver(
+      topic.discovery('B2'),
+      discovery({ id: 'B2', name: `E-${i}`, mac: '11:22:33:44:55:66' }),
+    );
+    await ctx.tick(700);
+  }
+  assert.ok(discovered(ctx.gladys, ext.relay(4)), 'built 1.5 s after the first one');
+});
+
+test('boards seen in passing: over 64, said in the status; a Scan forgets them', async (t) => {
+  const ctx = await setup(t);
+  const client = await online(ctx);
+  await create(ctx, ext.relay(4));
+  for (let i = 0; i < 70; i += 1) {
+    const id = `P${i}`;
+    client.deliver(
+      topic.discovery(id),
+      discovery({ id, name: `pass-${i}`, mac: '11:22:33:44:55:66' }),
+    );
+    client.deliver(topic.discovery(id), '');
+  }
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  assert.equal(Object.keys(ctx.store.data.boards).length, 64);
+  client.deliver(topic.discovery('NEWBOARD'), discovery({ id: 'NEWBOARD', name: 'new-one' }));
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /1 new board\(s\) ignored.*Scan/);
+  await ctx.gladys.fake.scanRequest();
+  await settle();
+  assert.deepEqual(Object.keys(ctx.store.data.boards).sort(), [BOARD_ID]);
+  // The new board announces itself again (the broker resends the retained ones): accepted.
+  client.deliver(topic.discovery('NEWBOARD'), discovery({ id: 'NEWBOARD', name: 'new-one' }));
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  assert.ok(ctx.store.data.boards.NEWBOARD);
+  assert.ok(discovered(ctx.gladys, ext.relay(4, 'NEWBOARD')));
+});
+
+test('a CONNECT left unanswered twice with credentials: final stop, a reason each time', async (t) => {
+  const ctx = await setup(t);
+  ctx.broker.clients[0].unanswered();
+  await settle();
+  assert.match(
+    ctx.gladys.fake.connectionStatus.message.en,
+    /closed the connection without answering/,
+  );
+  assert.equal(ctx.store.data, null, 'not yet');
+  ctx.broker.clients[0].unanswered({ timeout: true });
+  await settle();
+  assert.equal(ctx.store.data.refused, true);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /no answer from the broker.*twice/);
+  assert.equal(ctx.broker.clients[0].ended, true);
+  await ctx.tick(3600_000);
+  assert.equal(ctx.broker.clients.length, 1);
+});
+
+test('a CONNECT without credentials left unanswered: tried again, never stopped', async (t) => {
+  const ctx = await setup(t, { cfg: { broker_url: '192.168.1.50' } });
+  for (let i = 0; i < 3; i += 1) {
+    ctx.broker.clients[0].unanswered();
+    await settle();
+  }
+  assert.equal(ctx.store.data, null);
+  assert.equal(ctx.broker.clients[0].ended, false);
+});
+
+test('a broker without MQTT 5: MQTT 3.1.1, said in the status', async (t) => {
+  const ctx = await setup(t);
+  assert.equal(ctx.broker.clients[0].options.protocolVersion, 5);
+  const err = new Error('Connection refused: Unsupported Protocol Version');
+  err.code = 132;
+  ctx.broker.clients[0].emit('error', err);
+  await settle();
+  assert.equal(ctx.broker.clients.length, 2);
+  assert.equal(ctx.broker.clients[0].ended, true);
+  assert.equal(ctx.broker.clients[1].options.protocolVersion, 4);
+  await online(ctx);
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(ctx.gladys.fake.connectionStatus.message.en, /does not support MQTT 5/);
+});
+
+test('a relay taken by a shutter after a Scan: its own reason', async (t) => {
+  const ctx = await setup(t, { cfg: { ...BASE, safe_outputs: '4' } });
+  const client = await online(ctx);
+  const relay = await create(ctx, ext.relay(4));
+  client.deliver(topic.discovery(), discovery({}, { shutters: 3, boards: '11000000' }), {
+    retain: true,
+  });
+  await ctx.tick(TIMINGS.rebuildDebounce);
+  await ctx.gladys.fake.scanRequest();
+  await settle();
+  const ack = await command(ctx, relay, 'power', 1, { feature: relay.features[0] });
+  assert.match(ack.error, /ne fait pas \(ou plus\) partie de la configuration acceptée/);
+});
+
+test('the transport badge turns local as soon as the board publishes', async (t) => {
+  const ctx = await setup(t);
+  const client = await online(ctx);
+  const relay = await create(ctx, ext.relay(4));
+  client.deliver(topic.sensor(), { temp: 30 });
+  await settle();
+  const last = ctx.gladys.fake.transports
+    .filter((x) => x.device_external_id === relay.external_id)
+    .at(-1);
+  assert.equal(last.transport, DEVICE_TRANSPORTS.LOCAL);
+});
+
+test('a declared safe relay of an unknown board id is named in the status', async (t) => {
+  const ctx = await setup(t, { cfg: { ...BASE, safe_outputs: 'E-BOARD-DD53AC85:5' } });
+  await online(ctx);
+  await ctx.tick(TIMINGS.statusRefresh);
+  assert.match(
+    ctx.gladys.fake.connectionStatus.message.en,
+    /no accepted board has the id E-BOARD-DD53AC85/,
+  );
 });

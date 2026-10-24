@@ -19,7 +19,8 @@ export const DEFAULT_CONFIG = {
   language: 'fr',
 };
 
-const SCHEMES = ['mqtt:', 'mqtts:', 'ws:', 'wss:', 'tcp:', 'ssl:'];
+/** TCP or TLS only (the size guard of src/mqtt.js reads the raw MQTT stream). */
+const SCHEMES = { 'mqtt:': false, 'tcp:': false, 'mqtts:': true, 'ssl:': true };
 
 /** Only `true` (or the text "true") allows: anything else, missing included, refuses. */
 const strictTrue = (value) => value === true || value === 'true';
@@ -56,14 +57,27 @@ export function parseBrokerUrl(raw) {
   } catch {
     return { error: 'invalid' };
   }
-  if (!SCHEMES.includes(url.protocol) || !url.hostname) {
+  if (!Object.hasOwn(SCHEMES, url.protocol) || !url.hostname) {
     return { error: 'invalid' };
   }
   if (url.username || url.password) {
     // Credentials belong to their own fields (the secret one is never shown again).
     return { error: 'credentials' };
   }
-  return { url: url.toString().replace(/\/$/, '') };
+  if ((url.pathname && url.pathname !== '/') || url.search || url.hash) {
+    return { error: 'invalid' };
+  }
+  const secure = SCHEMES[url.protocol];
+  const port = url.port ? Number(url.port) : secure ? 8883 : 1883;
+  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
+  return {
+    url: `${secure ? 'mqtts' : 'mqtt'}://${url.host}`.replace(/:(1883|8883)$/, (m, p) =>
+      (secure ? p === '8883' : p === '1883') ? '' : m,
+    ),
+    host,
+    port,
+    tls: secure,
+  };
 }
 
 /** At most this many entries in "Relays declared safe". */
@@ -119,14 +133,22 @@ export function normalizeConfig(raw = {}) {
   const password = typeof c.password === 'string' ? c.password : '';
   const outputs = parseSafeOutputs(c.safe_outputs);
   let problem = broker.error ? `broker:${broker.error}` : undefined;
+  const username = typeof c.username === 'string' ? c.username.trim().slice(0, 256) : '';
   if (!problem && password.length > 1024) {
     problem = 'password';
+  } else if (!problem && password !== '' && username === '') {
+    // MQTT 3.1.1 has no password without a user name: the client would never connect.
+    problem = 'user';
   }
   return {
     /** Why the configuration cannot be used (shown in the status), else undefined. */
     problem,
+    /** scheme://host[:port]: nothing else, so it may be logged. */
     brokerUrl: broker.url,
-    username: typeof c.username === 'string' ? c.username.trim().slice(0, 256) : '',
+    host: broker.host,
+    port: broker.port,
+    tls: broker.tls,
+    username,
     password: problem ? '' : password,
     // TLS certificates are checked unless the user turns it off.
     verifyCertificate: !strictFalse(c.verify_certificate),

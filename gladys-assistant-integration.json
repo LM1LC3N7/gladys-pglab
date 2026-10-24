@@ -44,8 +44,8 @@
       "type": "string",
       "label": { "en": "MQTT broker address", "fr": "Adresse du broker MQTT" },
       "description": {
-        "en": "The broker your boards publish to: its IP address (port 1883), or mqtts://address:8883 in TLS. The broker of Gladys: the IP address of the Gladys machine.",
-        "fr": "Le broker où publient vos cartes : son adresse IP (port 1883), ou mqtts://adresse:8883 en TLS. Le broker de Gladys : l'adresse IP de la machine Gladys."
+        "en": "The broker your boards publish to: its IP address (port 1883), or mqtts://address:8883 in TLS (no WebSocket). The broker of Gladys: the IP address of the Gladys machine.",
+        "fr": "Le broker où publient vos cartes : son adresse IP (port 1883), ou mqtts://adresse:8883 en TLS (pas de WebSocket). Le broker de Gladys : l'adresse IP de la machine Gladys."
       },
       "placeholder": { "en": "192.168.1.20", "fr": "192.168.1.20" },
       "required": true
@@ -78,8 +78,8 @@
         "fr": "Vérifier le certificat TLS du broker (mqtts)"
       },
       "description": {
-        "en": "Turn off only for a broker with a self-signed certificate on your local network.",
-        "fr": "À désactiver seulement pour un broker au certificat auto-signé sur votre réseau local."
+        "en": "Turn off only for a broker with a self-signed certificate on your local network. Turned off, the user name and the password go to whoever answers at that address (no check of who it is).",
+        "fr": "À désactiver seulement pour un broker au certificat auto-signé sur votre réseau local. Désactivé, l'utilisateur et le mot de passe partent à quiconque répond à cette adresse (rien ne vérifie qui c'est)."
       },
       "required": false,
       "default": true
@@ -98,10 +98,10 @@
       "type": "string",
       "label": { "en": "Relays declared safe", "fr": "Relais déclarés sûrs" },
       "description": {
-        "en": "The numbers of the relays (parameter PGLAB_RELAY in the Discovery tab), separated by commas. With several boards, write board-id:number (parameter PGLAB_ID, for example E-BOARD-DD53AC85:5): a plain number is then applied nowhere. Only loads that may be switched off or on at any time (a lamp, a socket for a lamp).",
-        "fr": "Les numéros des relais (paramètre PGLAB_RELAY dans l'onglet Découverte), séparés par des virgules. Avec plusieurs cartes, écrivez id-carte:numéro (paramètre PGLAB_ID, par exemple E-BOARD-DD53AC85:5) : un numéro seul n'est alors appliqué nulle part. Seulement des charges qu'on peut couper ou allumer à tout moment (une lampe, une prise de lampe)."
+        "en": "The numbers of the relays (parameter PGLAB_RELAY in the Discovery tab), separated by commas. With several boards, write board-id:number (parameter PGLAB_ID, for example DD53AC85:5): a plain number is then applied nowhere. Only loads that may be switched off or on at any time (a lamp, a socket for a lamp).",
+        "fr": "Les numéros des relais (paramètre PGLAB_RELAY dans l'onglet Découverte), séparés par des virgules. Avec plusieurs cartes, écrivez id-carte:numéro (paramètre PGLAB_ID, par exemple DD53AC85:5) : un numéro seul n'est alors appliqué nulle part. Seulement des charges qu'on peut couper ou allumer à tout moment (une lampe, une prise de lampe)."
       },
-      "placeholder": { "en": "4, 5, E-BOARD-DD53AC85:9", "fr": "4, 5, E-BOARD-DD53AC85:9" },
+      "placeholder": { "en": "4, 5, DD53AC85:9", "fr": "4, 5, DD53AC85:9" },
       "required": false,
       "default": ""
     },

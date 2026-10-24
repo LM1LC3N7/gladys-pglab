@@ -37,7 +37,7 @@ src/app.js         the session, messages, devices, states, commands, test button
 src/protocol.js    PG LAB topics, parsers, messages (ported from pypglab)
 src/model.js       boards -> Gladys devices, readers and writers (pure)
 src/mqtt.js        mqtt.js client options, error reasons
-src/store.js       /data: refused credentials, accepted layouts (never a secret)
+src/store.js       /data: refused credentials, accepted boards (never a secret)
 src/publisher.js   states within 300 per minute
 src/config.js      the manifest config_schema, normalized
 src/i18n.js        runtime texts, English and French
@@ -51,8 +51,12 @@ src/i18n.js        runtime texts, English and French
 - **A relay is a switch only when declared safe** by the user; never a
   switch for a shutter. What a board publishes never makes an output
   commandable: a changed layout or MAC needs a Scan.
-- **Stop and close are never held** behind anything.
-- **One MQTT session**; nothing queued while the broker is down
+- **Stop and close** of a shutter are routed from the accepted
+  configuration in `/data` (no announcement needed) and refused only when
+  the broker is not connected, the shutter left the accepted
+  configuration, or the value is not a command (docs list it exactly).
+- **One MQTT session**, MQTT 5 with packets bounded to 8 KB (and a guard on
+  the raw socket); nothing queued while the broker is down
   (`queueQoSZero: false`).
 - **Never a secret** in the logs, `/data`, a status or an error. The
   password is "kept by Gladys in its database, never shown again" (Gladys

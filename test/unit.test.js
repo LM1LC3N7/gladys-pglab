@@ -196,10 +196,36 @@ test('MAC addresses are normalized', () => {
 });
 
 test('configuration: broker, safe relays, options', () => {
-  assert.deepEqual(parseBrokerUrl('192.168.1.2'), { url: 'mqtt://192.168.1.2' });
-  assert.deepEqual(parseBrokerUrl('mqtts://broker.lan:8883'), { url: 'mqtts://broker.lan:8883' });
+  assert.deepEqual(parseBrokerUrl('192.168.1.2'), {
+    url: 'mqtt://192.168.1.2',
+    host: '192.168.1.2',
+    port: 1883,
+    tls: false,
+  });
+  assert.deepEqual(parseBrokerUrl('mqtts://broker.lan'), {
+    url: 'mqtts://broker.lan',
+    host: 'broker.lan',
+    port: 8883,
+    tls: true,
+  });
+  assert.equal(parseBrokerUrl('tcp://h:2000').url, 'mqtt://h:2000');
+  assert.equal(parseBrokerUrl('ssl://[::1]').host, '::1');
   assert.deepEqual(parseBrokerUrl('mqtt://u:p@host'), { error: 'credentials' });
-  assert.deepEqual(parseBrokerUrl('http://host'), { error: 'invalid' });
+  // Nothing but scheme, host and port (the URL is logged); no WebSocket (the size guard).
+  for (const bad of [
+    'http://host',
+    'ws://host',
+    'wss://host',
+    'mqtt://h/mqtt',
+    'mqtt://h?token=x',
+  ]) {
+    assert.deepEqual(parseBrokerUrl(bad), { error: 'invalid' }, bad);
+  }
+  assert.equal(normalizeConfig({ broker_url: 'h', password: 'p' }).problem, 'user');
+  assert.equal(
+    normalizeConfig({ broker_url: 'h', username: 'u', password: 'p' }).problem,
+    undefined,
+  );
   const { safe, invalid } = parseSafeOutputs('4, 5;DD53AC85:9\nX:64 07 abc a/b:1');
   assert.deepEqual([...safe], ['4', '5', 'DD53AC85:9']);
   assert.equal(invalid, 4);
@@ -294,15 +320,25 @@ test('shutter states map to the Gladys cover states', () => {
 });
 
 test('/data: bounded, only known keys, never a secret', () => {
+  const B = {
+    name: BOARD_NAME,
+    type: 'E-BOARD',
+    mac: 'aa:bb:cc:dd:53:85',
+    shutters: 2,
+    boards: '11000000',
+  };
   const raw = {
     refused: true,
     password: 'S3cret',
     boards: {
-      DD53AC85: { mac: 'aa:bb:cc:dd:53:85', shutters: 2, boards: '11000000', extra: 1 },
-      'bad/id': { mac: 'aa:bb:cc:dd:53:85', shutters: 2, boards: '11000000' },
-      BAD1: { mac: 'nope', shutters: 2, boards: '11000000' },
-      BAD2: { mac: 'aa:bb:cc:dd:53:85', shutters: 40, boards: '11000000' },
-      SW: { mac: 'aa:bb:cc:dd:53:86', shutters: null, boards: null },
+      DD53AC85: { ...B, extra: 1 },
+      'bad/id': B,
+      BAD1: { ...B, mac: 'nope' },
+      BAD2: { ...B, shutters: 40 },
+      BAD3: { ...B, name: 'a/#' },
+      BAD4: { ...B, type: 'E-THING' },
+      BAD5: { mac: B.mac, shutters: 2, boards: '11000000' },
+      SW: { ...B, type: 'E-SWITCH', mac: 'aa:bb:cc:dd:53:86', shutters: null, boards: null },
     },
   };
   const memory = normalizeMemory(raw);
@@ -313,7 +349,27 @@ test('/data: bounded, only known keys, never a secret', () => {
   assert.equal(normalizeMemory(JSON.parse('{"__proto__":{"refused":true}}')).refused, false);
   const many = { boards: {} };
   for (let i = 0; i < 100; i += 1) {
-    many.boards[`B${i}`] = { mac: 'aa:bb:cc:dd:53:85', shutters: 0, boards: '10000000' };
+    many.boards[`B${i}`] = B;
   }
   assert.equal(normalizeMemory(many).boards.size, 64);
+});
+
+test('device names stay distinct with a long board name', () => {
+  const name = `B${'x'.repeat(61)}`;
+  const model = buildModel({
+    externalIds,
+    boards: [
+      {
+        id: BOARD_ID,
+        name,
+        type: 'E-BOARD',
+        mac: 'aa:bb:cc:dd:53:85',
+        layout: { shutters: 1, boards: '10000000' },
+      },
+    ],
+  });
+  const names = model.devices.map((d) => d.name);
+  assert.equal(new Set(names).size, names.length);
+  assert.ok(names.every((n) => n.length <= 60));
+  assert.ok(names.includes(`${name.slice(0, 60 - ' relais 7'.length)} relais 7`));
 });
