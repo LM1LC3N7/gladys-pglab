@@ -1,177 +1,157 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "PG LAB Electronics",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "PG LAB Electronics E-Board: relays, shutters and board temperature over local MQTT.",
+    "fr": "Cartes PG LAB Electronics E-Board : relais, volets et température en MQTT local."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
-  "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-pglab:0.1.0",
+  "gladys_version": ">=5.0.0",
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-pglab/main/cover.png",
+  "categories": ["protocols", "lighting"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": {
+        "en": "Your PG LAB boards in Gladys",
+        "fr": "Vos cartes PG LAB dans Gladys"
+      },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Reads and controls the PG LAB Electronics E-Boards through an MQTT broker, on your local network: relays, shutters, and the temperature and voltage of the board. The boards announce themselves on the broker (topic pglab/discovery). A broker is needed: yours (Mosquitto…), or the one of Gladys (MQTT integration of Gladys, broker started) at mqtt://{{gladys_host}}:1883 with its user and password (never localhost: the integration runs in its own container). Set the same broker in the MQTT settings of each board. Nothing goes through the Internet. Never tested with a real board. Unofficial, not affiliated with PG LAB Electronics.",
+        "fr": "Lit et commande les cartes PG LAB Electronics E-Board via un broker MQTT, sur votre réseau local : relais, volets, et la température et la tension de la carte. Les cartes s'annoncent sur le broker (topic pglab/discovery). Il faut un broker : le vôtre (Mosquitto…), ou celui de Gladys (intégration MQTT de Gladys, broker démarré) à mqtt://{{gladys_host}}:1883 avec son utilisateur et son mot de passe (jamais localhost : l'intégration tourne dans son propre conteneur). Réglez ce même broker dans les réglages MQTT de chaque carte. Rien ne passe par Internet. Jamais testé avec une vraie carte. Non officiel, sans lien avec PG LAB Electronics."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-pglab/blob/main/docs/fr.md",
+          "label": { "en": "Guide (French)", "fr": "Guide (français)" }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-pglab/blob/main/docs/en.md",
+          "label": { "en": "Guide (English)", "fr": "Guide (anglais)" }
+        },
+        {
+          "url": "https://github.com/pglab-electronics/pypglab",
+          "label": { "en": "MQTT protocol (pypglab)", "fr": "Protocole MQTT (pypglab)" }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
+      "key": "broker_url",
+      "type": "string",
+      "label": { "en": "MQTT broker address", "fr": "Adresse du broker MQTT" },
       "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+        "en": "The broker your boards publish to: its IP address (port 1883), or mqtts://address:8883 in TLS. The broker of Gladys: the IP address of the Gladys machine.",
+        "fr": "Le broker où publient vos cartes : son adresse IP (port 1883), ou mqtts://adresse:8883 en TLS. Le broker de Gladys : l'adresse IP de la machine Gladys."
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
+      "placeholder": { "en": "192.168.1.20", "fr": "192.168.1.20" },
+      "required": true
     },
     {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
+      "key": "username",
+      "type": "string",
+      "label": { "en": "User name", "fr": "Utilisateur" },
       "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+        "en": "The user of the broker, if it asks for one.",
+        "fr": "L'utilisateur du broker, s'il en demande un."
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
+      "required": false
     },
     {
-      "key": "unit",
+      "key": "password",
+      "type": "secret",
+      "label": { "en": "Password", "fr": "Mot de passe" },
+      "description": {
+        "en": "The password of the broker: kept by Gladys in its database, never shown again, sent only to your broker.",
+        "fr": "Le mot de passe du broker : gardé par Gladys dans sa base, jamais réaffiché, envoyé seulement à votre broker."
+      },
+      "required": false
+    },
+    {
+      "key": "verify_certificate",
+      "type": "boolean",
+      "label": {
+        "en": "Verify the TLS certificate of the broker (mqtts)",
+        "fr": "Vérifier le certificat TLS du broker (mqtts)"
+      },
+      "description": {
+        "en": "Turn off only for a broker with a self-signed certificate on your local network.",
+        "fr": "À désactiver seulement pour un broker au certificat auto-signé sur votre réseau local."
+      },
+      "required": false,
+      "default": true
+    },
+    {
+      "key": "relays_section",
+      "type": "section",
+      "label": { "en": "Relays", "fr": "Relais" },
+      "description": {
+        "en": "A relay of an E-Board may feed anything (a lamp, but also a circulator, the boiler, a heater, a freezer, a gate), and a \"turn everything off / on\" of a voice assistant or a scene reaches every switch. So a relay is only shown in Gladys, read only, with \"Turn on\" / \"Turn off\" buttons, until you declare it safe below: it then becomes a switch. What a board announces never makes a relay a switch. Shutters are shutters (open, close, stop), never switches.",
+        "fr": "Un relais d'une E-Board peut alimenter n'importe quoi (une lampe, mais aussi un circulateur, la chaudière, un radiateur, un congélateur, un portail), et un « éteins tout / allume tout » d'un assistant vocal ou d'une scène atteint chaque interrupteur. Un relais est donc seulement affiché dans Gladys, en lecture seule, avec des boutons « Allumer » / « Éteindre », jusqu'à ce que vous le déclariez sûr ci-dessous : il devient alors un interrupteur. Ce qu'annonce une carte ne fait jamais d'un relais un interrupteur. Les volets restent des volets (ouvrir, fermer, arrêter), jamais des interrupteurs."
+      }
+    },
+    {
+      "key": "safe_outputs",
+      "type": "string",
+      "label": { "en": "Relays declared safe", "fr": "Relais déclarés sûrs" },
+      "description": {
+        "en": "The numbers of the relays (parameter PGLAB_RELAY in the Discovery tab), separated by commas. With several boards, write board-id:number (parameter PGLAB_ID, for example E-BOARD-DD53AC85:5): a plain number is then applied nowhere. Only loads that may be switched off or on at any time (a lamp, a socket for a lamp).",
+        "fr": "Les numéros des relais (paramètre PGLAB_RELAY dans l'onglet Découverte), séparés par des virgules. Avec plusieurs cartes, écrivez id-carte:numéro (paramètre PGLAB_ID, par exemple E-BOARD-DD53AC85:5) : un numéro seul n'est alors appliqué nulle part. Seulement des charges qu'on peut couper ou allumer à tout moment (une lampe, une prise de lampe)."
+      },
+      "placeholder": { "en": "4, 5, E-BOARD-DD53AC85:9", "fr": "4, 5, E-BOARD-DD53AC85:9" },
+      "required": false,
+      "default": ""
+    },
+    {
+      "key": "allow_output_buttons",
+      "type": "boolean",
+      "label": {
+        "en": "Allow the \"Turn on\" / \"Turn off\" buttons",
+        "fr": "Autoriser les boutons « Allumer » / « Éteindre »"
+      },
+      "description": {
+        "en": "Off by default: the buttons of the relays not declared safe do nothing. On: a press (dashboard, scene) switches the relay.",
+        "fr": "Désactivé par défaut : les boutons des relais non déclarés sûrs ne font rien. Activé : un appui (tableau de bord, scène) commande le relais."
+      },
+      "required": false,
+      "default": false
+    },
+    {
+      "key": "sensor_interval",
+      "type": "number",
+      "label": {
+        "en": "Minimum interval between two readings of the board temperature and voltage (s)",
+        "fr": "Intervalle minimum entre deux mesures de température et de tension de la carte (s)"
+      },
+      "description": {
+        "en": "Relays and shutters are never delayed.",
+        "fr": "Les relais et les volets ne sont jamais retardés."
+      },
+      "required": false,
+      "default": 60,
+      "min": 0,
+      "max": 300
+    },
+    {
+      "key": "language",
       "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
+      "label": { "en": "Language of the messages", "fr": "Langue des messages" },
       "required": false,
-      "default": "celsius",
+      "default": "fr",
       "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
+        { "value": "fr", "label": { "en": "French", "fr": "Français" } },
+        { "value": "en", "label": { "en": "English", "fr": "Anglais" } }
       ]
-    },
-    {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
-      "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
-      },
-      "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
-      "timeout_seconds": 30
-    },
-    {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+      "key": "test_connection",
+      "label": { "en": "Test the connection", "fr": "Tester la connexion" },
+      "timeout_seconds": 45
     }
   ]
 }

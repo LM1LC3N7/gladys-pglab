@@ -1,67 +1,132 @@
-# Template de démonstration
+# PG LAB Electronics pour Gladys
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Cette intégration lit et commande les cartes **PG LAB Electronics E-Board**
+via un **broker MQTT** de votre réseau local : leurs relais, leurs volets,
+et la température et la tension du processeur de la carte. Rien ne passe
+par Internet.
+
+> **Jamais testée avec une vraie carte.**
+> Cette intégration n'a jamais été testée avec une vraie carte PG LAB : elle
+> suit le protocole MQTT de pypglab, la bibliothèque écrite par PG LAB
+> Electronics pour Home Assistant. Non officielle, sans lien avec PG LAB
+> Electronics. Vos retours sont les bienvenus.
+
+## Ce qu'il faut
+
+1. **Un broker MQTT** que les cartes et Gladys peuvent joindre. Deux choix :
+   - **votre propre broker** (Mosquitto sur un Raspberry Pi, un NAS…) :
+     saisissez son adresse IP ;
+   - **le broker de Gladys** : dans Gladys, ouvrez **Intégrations → MQTT**,
+     démarrez le broker proposé et notez son utilisateur et son mot de
+     passe. Saisissez ensuite `mqtt://<adresse IP de la machine Gladys>:1883`
+     (l'écran de configuration affiche l'adresse qu'il devine). **Jamais
+     `localhost`** : l'intégration tourne dans son propre conteneur, où
+     `localhost` est le conteneur lui-même. Un pare-feu sur la machine
+     Gladys doit laisser passer le port 1883.
+2. **Chaque carte réglée sur ce broker** : dans les réglages MQTT de
+   l'E-Board (sa page web), saisissez le même broker, utilisateur et mot de
+   passe. La carte s'annonce alors sous `pglab/discovery/<id>/config` et
+   publie ses états sous `pglab/<nom>/…`.
+
+Quiconque peut publier sur le broker peut se faire passer pour une carte :
+protégez le broker par un mot de passe et gardez-le sur votre réseau local.
+
+## Mise en route
+
+1. Installez l'intégration, puis ouvrez son onglet **Configuration**.
+2. Saisissez l'adresse du broker, et son utilisateur et son mot de passe
+   s'il en demande. Le mot de passe est gardé par Gladys dans sa base,
+   jamais réaffiché, envoyé seulement à votre broker.
+3. Cliquez sur **Tester la connexion** : elle connecte (ou reconnecte)
+   l'unique session de l'intégration et compte les cartes qui se sont
+   annoncées.
+4. Ouvrez l'onglet **Découverte** et créez les appareils voulus.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+| Appareil                  | Fonctions                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| La carte                  | température de la carte (°C), tension du processeur (V), en lecture seule             |
+| Chaque volet              | ouvrir / fermer / arrêter (un volet, jamais un interrupteur)                          |
+| Chaque relais, par défaut | son état (lecture seule), boutons **Allumer** et **Éteindre** (désactivés par défaut) |
+| Chaque relais déclaré sûr | un interrupteur (marche/arrêt)                                                        |
 
-## Configuration
+Un relais peut alimenter n'importe quoi : une lampe, mais aussi un
+circulateur, la chaudière, un radiateur, un congélateur, un portail. Un
+« éteins tout / allume tout » d'un assistant vocal ou d'une scène atteint
+chaque interrupteur. Un relais n'est donc un interrupteur que si **vous** le
+déclarez sûr :
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+- **Relais déclarés sûrs** : les numéros des relais (paramètre
+  `PGLAB_RELAY` dans l'onglet Découverte), par exemple `4, 5`. Avec
+  plusieurs cartes, écrivez `id-carte:numéro` (paramètre `PGLAB_ID`), par
+  exemple `DD53AC85:5` : un numéro seul n'est alors appliqué nulle part (le
+  statut le dit).
+- **Autoriser les boutons « Allumer » / « Éteindre »** : désactivé par
+  défaut. Tant qu'il l'est, les boutons des relais non déclarés sûrs
+  n'envoient rien.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+Ce qu'annonce une carte ne fait jamais d'un relais un interrupteur, ni d'un
+relais une sortie commandable : seuls ces deux réglages le font.
 
-## Actions
+## Quand une carte change de configuration
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+L'intégration garde, pour chaque carte, la configuration que vous avez
+acceptée : son adresse MAC, son nombre de volets et ses cartes d'extension
+(dans `/data/pglab-state.json`, sans utilisateur ni mot de passe). La
+première annonce d'une nouvelle carte est acceptée telle quelle. Si une
+carte annonce ensuite une autre configuration (d'autres volets, d'autres
+relais) ou arrive avec une autre adresse MAC, elle **n'est pas appliquée** :
+le statut le dit, et tant que vous n'avez pas cliqué sur **Scanner** dans
+l'onglet Découverte, ses relais et l'ouverture de ses volets sont refusés.
+Cliquer sur **Scanner** accepte ce qu'annoncent les cartes à ce moment-là.
 
-## Scènes
+Deux cartes du même nom partagent leurs topics : leurs états sont ignorés
+et toute commande sauf un arrêt est refusée jusqu'à ce que l'une d'elles
+soit renommée (ou que l'ancienne annonce retenue d'une carte retirée soit
+effacée du broker).
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+## Quand une commande est refusée
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+Un **arrêt** de volet n'est refusé que dans ces cas :
 
-## Tableau de bord
+- le volet n'est pas connu dans cette session (la carte ne s'est pas
+  annoncée depuis la connexion au broker, ou a retiré son annonce) ;
+- le broker n'est pas connecté ;
+- la valeur reçue n'est pas une commande de volet ;
+- la commande n'a pas pu partir dans les 3,5 s après le clic (rien
+  n'attend devant un arrêt, ce cas ne devrait pas arriver).
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+Une **fermeture** est refusée dans les mêmes cas, et aussi quand deux cartes
+portent le même nom. Une **ouverture** et les commandes de relais sont
+refusées dans ces cas, et aussi quand la configuration de la carte a changé
+ou qu'une autre adresse MAC répond pour elle (jusqu'à un Scan), quand le
+relais n'est pas déclaré sûr (son interrupteur), ou quand les boutons sont
+désactivés (ses boutons).
 
-## Dépannage
+Une commande part une fois, jamais mise en attente quand le broker est
+coupé. Quand la carte ne publie pas l'état attendu dans les 4 secondes
+environ, Gladys indique « envoyée, sans confirmation ».
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+## Problèmes de connexion
+
+- **Broker injoignable** : l'intégration réessaie toutes les 10 secondes.
+- **Identifiants refusés** : l'intégration s'arrête pour de bon (même après
+  un redémarrage) et ne réessaie rien d'elle-même. Enregistrez d'autres
+  identifiants, ou cliquez sur **Tester la connexion** ; l'arrêt est levé dès
+  qu'une connexion réussit.
+- **Aucune carte ne s'est annoncée** : vérifiez les réglages MQTT des cartes.
+- Une carte qui n'a rien publié depuis 5 minutes est affichée injoignable
+  (la carte envoie sa température environ chaque minute).
+
+## Limites
+
+- Les cartes E-Switch et E-Relay sont reconnues mais n'offrent encore rien
+  (pypglab 0.0.5 ne leur donne aucune sortie).
+- Les entrées de la carte ne sont pas proposées : pypglab n'a pas de topic
+  pour elles.
+- Les états gardés par le broker (retenus) sont ignorés : ils peuvent être
+  anciens. Un relais affiche son état à son prochain changement.
+- 64 cartes au plus, 64 relais et 32 volets par carte.
+- Le temps depuis le dernier redémarrage de la carte (`rtime`) n'est pas
+  proposé.

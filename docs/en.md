@@ -1,61 +1,125 @@
-# Demo Devices Template
+# PG LAB Electronics for Gladys
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+This integration reads and controls the **PG LAB Electronics E-Board** boards
+through an **MQTT broker** on your local network: their relays, their
+shutters, and the temperature and processor voltage of the board. Nothing
+goes through the Internet.
+
+> **Never tested with a real board.**
+> This integration has never been tested with a real PG LAB board: it
+> follows the MQTT protocol of pypglab, the library PG LAB Electronics wrote
+> for Home Assistant. Unofficial, not affiliated with PG LAB Electronics.
+> Feedback is welcome.
+
+## What you need
+
+1. **An MQTT broker** the boards and Gladys can both reach. Two choices:
+   - **your own broker** (Mosquitto on a Raspberry Pi, a NAS…): type its IP
+     address;
+   - **the broker of Gladys**: in Gladys, open **Integrations → MQTT**, start
+     the broker it offers and note its user and password. Then type
+     `mqtt://<IP address of the Gladys machine>:1883` (the configuration
+     screen shows the address it guesses). **Never `localhost`**: the
+     integration runs in its own container, where `localhost` is the
+     container itself. A firewall on the Gladys machine must let port 1883
+     through.
+2. **Each board set to that broker**: in the MQTT settings of the E-Board
+   (its web page), type the same broker, user and password. The board then
+   announces itself under `pglab/discovery/<id>/config` and publishes its
+   states under `pglab/<name>/…`.
+
+Anybody allowed to publish on the broker can impersonate a board: give the
+broker a password, and keep it on your local network.
+
+## Setting up
+
+1. Install the integration, then open its **Configuration** tab.
+2. Type the address of the broker, and its user and password if it asks
+   for them. The password is kept by Gladys in its database, never shown
+   again, sent only to your broker.
+3. Click **Test the connection**: it connects (or reconnects) the single
+   session of the integration and counts the boards that announced
+   themselves.
+4. Open the **Discovery** tab and create the devices you want.
 
 ## What you get
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+| Device                   | Features                                                                     |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| The board                | board temperature (°C), processor voltage (V), read only                     |
+| Each shutter             | open / close / stop (a shutter, never a switch)                              |
+| Each relay, by default   | its state (read only), **Turn on** and **Turn off** buttons (off by default) |
+| Each relay declared safe | a switch (on/off)                                                            |
 
-## Configuration
+A relay may feed anything: a lamp, but also a circulator, the boiler, a
+heater, a freezer, a gate. A "turn everything off / on" of a voice
+assistant or a scene reaches every switch. So a relay is a switch only when
+**you** declare it safe:
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+- **Relays declared safe**: the numbers of the relays (parameter
+  `PGLAB_RELAY` in the Discovery tab), for example `4, 5`. With several
+  boards, write `board-id:number` (parameter `PGLAB_ID`), for example
+  `DD53AC85:5`: a plain number is then applied nowhere (the status says so).
+- **Allow the "Turn on" / "Turn off" buttons**: off by default. While off,
+  the buttons of the relays not declared safe send nothing.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+What a board announces never turns a relay into a switch, and never makes a
+relay commandable: only these two settings do.
 
-## Actions
+## When a board changes its configuration
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+The integration keeps, for each board, the configuration you accepted: its
+MAC address, its number of shutters and its extension boards (in
+`/data/pglab-state.json`, without any user name or password). The first
+announcement of a new board is accepted as it is. If a board later
+announces another configuration (other shutters, other relays) or comes
+with another MAC address, it is **not applied**: the status says so, and
+until you click **Scan** in the Discovery tab, its relays and the opening of
+its shutters are refused. Clicking **Scan** accepts what the boards announce
+at that moment.
 
-## Scenes
+Two boards with the same name share their topics: their states are ignored
+and every command but a stop is refused until one of them is renamed (or
+the old retained announcement of a board you removed is cleared from the
+broker).
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+## When a command is refused
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+A **stop** of a shutter is refused only in these cases:
 
-## Dashboard
+- the shutter is not known in this session (the board has not announced
+  itself since the connection to the broker, or withdrew its announcement);
+- the broker is not connected;
+- the value received is not a shutter command;
+- the command could not leave within 3.5 s of the click (nothing waits in
+  front of a stop, so this should not happen).
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+A **close** is refused in the same cases, and also when two boards use the
+same name. An **open** and the relay commands are refused in these cases,
+and also when the configuration of the board changed or another MAC address
+answers for it (until a Scan), when the relay is not declared safe (its
+switch), or when the buttons are off (its buttons).
 
-## Troubleshooting
+A command is sent once, never queued while the broker is down. When the
+board does not publish the expected state within about 4 seconds, Gladys
+says "sent, without confirmation".
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Connection problems
+
+- **Broker unreachable**: the integration tries again every 10 seconds.
+- **Credentials refused**: the integration stops for good (also after a
+  restart) and tries nothing by itself. Save other credentials, or click
+  **Test the connection**; the stop is lifted once a connection succeeds.
+- **No board announced itself**: check the MQTT settings of the boards.
+- A board that published nothing for 5 minutes is shown unreachable (the
+  board sends its temperature about every minute).
+
+## Limits
+
+- E-Switch and E-Relay boards are recognised but offer nothing yet (pypglab
+  0.0.5 gives them no output).
+- The inputs of the board are not offered: pypglab has no topic for them.
+- The states kept by the broker (retained) are ignored: they may be old.
+  A relay shows its state at its next change.
+- At most 64 boards, 64 relays and 32 shutters per board.
+- The time since the last restart of the board (`rtime`) is not offered.
