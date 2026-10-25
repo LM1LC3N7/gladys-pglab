@@ -156,31 +156,74 @@ test('without credentials, a broker closing after the CONNECT is tried again', a
   assert.equal(store.data, null);
 });
 
-test('a message over 8 KB cuts the connection before it is read', async (t) => {
-  let sent = 0;
+test('a message over 8 KB cuts the connection before it is read (200 MB announced)', async (t) => {
+  // Bytes the broker pushed on each connection before the integration cut it.
+  const sent = [];
   const server = await fakeBroker((packet, reply, socket) => {
     reply({ cmd: 'connack', reasonCode: 0, sessionPresent: false });
     // A PUBLISH announcing 200 MB, then data as long as the socket takes it.
     socket.write(Buffer.from([0x30, 0x80, 0x80, 0xe8, 0x5f]));
     const chunk = Buffer.alloc(64 * 1024, 65);
-    const pump = () => {
-      if (!socket.destroyed && sent < 50 * 1024 * 1024) {
-        sent += chunk.length;
+    const index = sent.push(0) - 1;
+    const pump = (err) => {
+      if (!err && !socket.destroyed && sent[index] < 50 * 1024 * 1024) {
+        sent[index] += chunk.length;
         socket.write(chunk, pump);
       }
     };
     pump();
   });
   const before = process.memoryUsage().rss;
-  const { gladys } = await run(t, server);
-  assert.ok(sent < 20 * 1024 * 1024, `${sent} bytes pushed before the cut`);
+  const { gladys, store } = await run(t, server);
+  assert.ok(sent.length >= 2, 'the connection is tried again after the cut');
+  assert.ok(
+    sent.every((n) => n < 20 * 1024 * 1024),
+    `${sent.join(', ')} bytes pushed before the cuts`,
+  );
   assert.ok(process.memoryUsage().rss - before < 100 * 1024 * 1024);
-  assert.ok(server.closed >= 1);
+  assert.ok(server.closed >= 2);
+  assert.equal(store.data, null, 'never a stop on credentials');
   const messages = gladys.fake.connectionStatuses.map((s) => s.message?.en ?? '');
   assert.ok(
     messages.some((m) => /a message over 8 KB: connection cut/.test(m)),
     messages.join('\n'),
   );
+});
+
+test('CONNACK and the header of a 200 MB PUBLISH in one chunk: accepted, cut, no refusal', async (t) => {
+  const server = await fakeBroker((packet, reply, socket) => {
+    const connack = mqttPacket.generate(
+      { cmd: 'connack', reasonCode: 0, sessionPresent: false },
+      { protocolVersion: packet.protocolVersion },
+    );
+    // The CONNACK and the start of a PUBLISH announcing 200 MB in the same TCP chunk.
+    const header = Buffer.from([0x30, 0x80, 0x80, 0xe8, 0x5f]);
+    socket.write(Buffer.concat([connack, header, Buffer.alloc(1024, 65)]));
+  });
+  const { store, gladys, app } = await run(t, server, { settleMs: 1500 });
+  assert.ok(server.connects.length >= 2, `${server.connects.length} CONNECT(s): tried again`);
+  assert.ok(server.closed >= 1, 'the connection was cut');
+  assert.equal(store.data, null, 'no refusal persisted');
+  assert.equal(app.unanswered, 0, 'the CONNACK reached the client every time');
+  const messages = gladys.fake.connectionStatuses.map((s) => s.message?.en ?? '');
+  assert.ok(
+    messages.some((m) => /a message over 8 KB: connection cut/.test(m)),
+    messages.join('\n'),
+  );
+  assert.ok(!messages.some((m) => /without answering/.test(m)), messages.join('\n'));
+});
+
+test('the packets before a refused one in the same chunk are still delivered', async () => {
+  const guard = new PacketGuard(100);
+  const out = [];
+  const errors = [];
+  guard.on('data', (c) => out.push(c));
+  guard.on('error', (e) => errors.push(e));
+  const connack = Buffer.from([0x20, 0x02, 0x00, 0x00]);
+  guard.write(Buffer.concat([connack, Buffer.from([0x30, 0xc8, 0x01, 1, 2, 3])]));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(Buffer.concat(out).equals(connack));
+  assert.equal(errors.length, 1);
 });
 
 test('the guard follows packets across chunks', async () => {

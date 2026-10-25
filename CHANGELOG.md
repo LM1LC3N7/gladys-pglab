@@ -10,6 +10,15 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A message over 8 KB whose header arrived in the same TCP chunk as the
+  CONNACK made the guard drop the whole chunk: the CONNACK never reached the
+  client, the attempt was counted as "closed without answering" and, at the
+  second time, the module stopped for good as if the credentials had been
+  refused. The packets that precede the refused one are now delivered before
+  the cut, so such a message only cuts the connection (tried again).
+
 ## [0.1.1] - 2026-10-24
 
 ### Added

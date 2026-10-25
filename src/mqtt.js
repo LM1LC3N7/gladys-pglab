@@ -61,12 +61,24 @@ export class PacketGuard extends Transform {
 
   _transform(chunk, _encoding, callback) {
     let i = 0;
+    // Where the packet being refused starts in this chunk: the packets before
+    // it (a CONNACK in the same chunk...) are still delivered before the cut.
+    let start = 0;
+    const cut = (message) => {
+      if (start > 0) {
+        this.push(chunk.subarray(0, start));
+      }
+      callback(guardError(message));
+    };
     while (i < chunk.length) {
       if (this.skip > 0) {
         const n = Math.min(this.skip, chunk.length - i);
         this.skip -= n;
         i += n;
         continue;
+      }
+      if (this.header.length === 0) {
+        start = i;
       }
       this.header.push(chunk[i]);
       i += 1;
@@ -76,7 +88,7 @@ export class PacketGuard extends Transform {
       const last = this.header[this.header.length - 1];
       if (last & 0x80) {
         if (this.header.length >= 5) {
-          return callback(guardError('malformed packet length'));
+          return cut('malformed packet length');
         }
         continue;
       }
@@ -87,7 +99,7 @@ export class PacketGuard extends Transform {
         factor *= 128;
       }
       if (length + this.header.length > this.max) {
-        return callback(guardError(`a message over ${this.max / 1024} KB`));
+        return cut(`a message over ${this.max / 1024} KB`);
       }
       this.skip = length;
       this.header = [];
