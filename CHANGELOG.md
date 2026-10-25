@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-25
+
 ### Fixed
 
 - A message over 8 KB whose header arrived in the same TCP chunk as the
@@ -57,5 +59,6 @@ the notes of the version's GitHub Release.
   most, transport badges (a board silent for 5 minutes is unreachable),
   messages in French or English.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-pglab/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-pglab/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-pglab/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-pglab/releases/tag/v0.1.1

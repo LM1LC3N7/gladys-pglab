@@ -6,8 +6,8 @@
     "en": "PG LAB Electronics E-Board: relays, shutters and board temperature over local MQTT.",
     "fr": "Cartes PG LAB Electronics E-Board : relais, volets et température en MQTT local."
   },
-  "version": "0.1.1",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-pglab:0.1.1",
+  "version": "0.1.2",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-pglab:0.1.2",
   "gladys_version": ">=5.0.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-pglab/main/cover.png",
   "categories": ["protocols", "lighting"],
